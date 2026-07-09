@@ -77,6 +77,11 @@ parser.add_argument(
     help="build with debug info (implies --non-matching)",
 )
 parser.add_argument(
+    "--netplay",
+    action="store_true",
+    help="build with lockstep netplay support (implies --non-matching)",
+)
+parser.add_argument(
     "--bugfix",
     action="store_true",
     help="build with bug fixes (implies --non-matching)",
@@ -167,7 +172,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-if any({args.debug, args.bugfix, args.asm, args.testing}):
+if any({args.debug, args.bugfix, args.asm, args.testing, args.netplay}):
     args.non_matching = True
 
 
@@ -265,6 +270,8 @@ if args.debug:
     cflags_base.append("-sym on")
 if args.bugfix:
     cflags_base.append("-DBUGFIX")
+if args.netplay:
+    cflags_base.append("-DNETPLAY")
 
 cflags_base.append(f"-maxerrors {args.max_errors}")
 if args.max_errors == 0:
@@ -994,6 +1001,9 @@ config.libs = [
         [
             Object(NonMatching, "melee/gm/gmmain_lib.c"),
             Object(Matching, "melee/gm/gmmain.c"),
+            # Netplay module: new code, linked only via link_order_callback
+            # in --netplay builds (per the dummy.c pattern below).
+            *([Object(Matching, "melee/nw/nw_netplay.c")] if args.netplay else []),
             Object(NonMatching, "melee/gm/gm_1601.c"),
             Object(NonMatching, "melee/gm/gm_16AE.c"),
             Object(NonMatching, "melee/gm/gm_16F1.c"),
@@ -1794,13 +1804,12 @@ def link_order_callback(module_id: int, objects: List[str]) -> List[str]:
     # Don't modify the link order for matching builds
     if not config.non_matching:
         return objects
-    if module_id == 0:  # DOL
-        return objects + ["dummy.c"]
+    if module_id == 0 and args.netplay:  # DOL
+        return objects + ["melee/nw/nw_netplay.c"]
     return objects
 
 
-# Uncomment to enable the link order callback.
-# config.link_order_callback = link_order_callback
+config.link_order_callback = link_order_callback
 
 
 # Extra categories for progress tracking

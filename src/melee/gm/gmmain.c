@@ -20,6 +20,10 @@
 #include "lb/lbsnap.h"
 #include "lb/lbtime.h"
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
+
 #include <baselib/forward.h>
 
 #include <dolphin/card/CARDBios.h>
@@ -167,6 +171,13 @@ int main(void)
     HSD_InitComponent();
     GXSetMisc(1, 8);
     *seed_ptr = OSGetTick();
+#ifdef NETPLAY
+    /// Lockstep netplay: both peers must boot with the host-chosen seed.
+    nw_Init();
+    if (nw_IsActive()) {
+        *seed_ptr = (s32) nw_GetSeed();
+    }
+#endif
     lbAudioAx_8002838C();
     lb_80019AAC(&gmMain_8015FD24);
     HSD_VISetUserPostRetraceCallback(&gmMain_8015FDA0);

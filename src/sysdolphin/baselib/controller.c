@@ -10,6 +10,10 @@
 #include <MSL/math_ppc.h>
 #include <MSL/trigf.h>
 
+#ifdef NETPLAY
+#include "melee/nw/nw_netplay.h"
+#endif
+
 HSD_PadStatus default_status_data = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
 PadLibData default_libinfo_data = { 0,    0,    0, 0,    0, 0,    0x2D, 8,
@@ -366,6 +370,23 @@ void HSD_PadRenewMasterStatus(void)
         qread = &p->queue->stat[p->qread * 4];
         HSD_PadRawQueueShift(p->qnum, &p->qread);
         p->qcount -= 1;
+
+#ifdef NETPLAY
+        /// Netplay lockstep: the dequeued slot is returned to the ring, so
+        /// copy it out, re-enable interrupts (the exchange blocks on EXI and
+        /// the PADRead retrace callback must keep running), and substitute
+        /// the agreed frame-indexed inputs before the master derivation.
+        if (nw_IsActive()) {
+            static PADStatus nw_pads[4];
+            for (i = 0; i < 4; i++) {
+                nw_pads[i] = qread[i];
+            }
+            OSRestoreInterrupts(intr);
+            nw_ExchangePads(nw_pads);
+            intr = OSDisableInterrupts();
+            qread = nw_pads;
+        }
+#endif
 
         for (i = 0; i < 4; i++, mp += 1, qread += 1) {
             mp->last_button = mp->button;
