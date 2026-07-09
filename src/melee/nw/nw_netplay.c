@@ -27,8 +27,13 @@
 #define NW_CMD_CHECKSUM 0x05
 
 #define NW_MAGIC 0x4D4E4554 /* 'MNET' */
-#define NW_PROTO_VERSION 2
+#define NW_PROTO_VERSION 3
 #define NW_CHECKSUM_INTERVAL 60
+
+/// v3 POLL status word: status<<24 | arg (must match the device enum).
+#define NW_POLL_WAIT 0
+#define NW_POLL_READY 1
+#define NW_POLL_REPLAY 3
 
 /// Exchange unit: one full post-transform HSD_PadStatus per port.
 #define NW_PAD_BYTES sizeof(HSD_PadStatus) /* 0x44 */
@@ -41,11 +46,13 @@ extern StaticPlayer player_slots[PL_SLOT_MAX];
 
 static struct {
     bool active;
+    bool replaying;
     u8 local_mask;
     u8 combined_mask;
     u8 delay;
     u32 seed;
     u32 tick;
+    nw_TickRunner runner;
 } nw;
 
 /// One shared bounce buffer for all EXI DMA (transactions are sequential).
@@ -155,10 +162,43 @@ static u32 nw_StateChecksum(void)
     return hash;
 }
 
+void nw_SetTickRunner(nw_TickRunner runner)
+{
+    nw.runner = runner;
+}
+
+bool nw_IsReplaying(void)
+{
+    return nw.replaying;
+}
+
+/// RECV the device's serve-tick entries and swap them into master. Shared by
+/// the normal per-tick path and replay re-runs (the device serves recorded
+/// history while replaying).
+static bool nw_RecvInject(void)
+{
+    int i;
+
+    if (!nw_Transact(NW_CMD_RECV, nw_dma_buf, NW_XFER_BYTES, NW_EXI_READ,
+                     NULL))
+    {
+        return false;
+    }
+    memcpy(HSD_PadMasterStatus, nw_dma_buf, 4 * NW_PAD_BYTES);
+
+    /// Ports with no participant must read as unplugged, not neutral.
+    for (i = 0; i < 4; i++) {
+        if (!(nw.combined_mask & (1 << i))) {
+            HSD_PadMasterStatus[i].err = PAD_ERR_NO_CONTROLLER;
+        }
+    }
+    return true;
+}
+
 void nw_ExchangeMaster(void)
 {
-    u32 ready;
-    int i;
+    u32 poll;
+    u32 status;
 
     if (!nw.active) {
         return;
@@ -178,25 +218,47 @@ void nw_ExchangeMaster(void)
     /// Block until the agreed entries for the current tick arrive (the
     /// device pre-seeds ticks 0..delay-1 with neutral pads, so this never
     /// deadlocks at boot). This spin is the lockstep stall.
-    do {
-        ready = 0;
-        if (!nw_Transact(NW_CMD_POLL, NULL, 0, 0, &ready)) {
+    ///
+    /// v3: the device may instead direct a REPLAY -- it has already restored
+    /// memory K ticks back (rollback, or the R0 torture injector), and we
+    /// must re-run those K engine ticks with the recorded agreed inputs
+    /// before finishing the current tick. The replayed ticks are
+    /// deterministic re-execution: no SENDs, no checksums, no tick advance.
+    for (;;) {
+        poll = 0;
+        if (!nw_Transact(NW_CMD_POLL, NULL, 0, 0, &poll)) {
             goto fail;
         }
-    } while (ready == 0);
+        status = poll >> 24;
 
-    if (!nw_Transact(NW_CMD_RECV, nw_dma_buf, NW_XFER_BYTES, NW_EXI_READ,
-                     NULL))
-    {
-        goto fail;
-    }
-    memcpy(HSD_PadMasterStatus, nw_dma_buf, 4 * NW_PAD_BYTES);
-
-    /// Ports with no participant must read as unplugged, not neutral.
-    for (i = 0; i < 4; i++) {
-        if (!(nw.combined_mask & (1 << i))) {
-            HSD_PadMasterStatus[i].err = PAD_ERR_NO_CONTROLLER;
+        if (status == NW_POLL_READY) {
+            break;
         }
+        if (status == NW_POLL_REPLAY) {
+            u32 k = poll & 0xFFFFFF;
+
+            /// The device has already rewound its serve tick; dropping the
+            /// directive would skew tick numbering forever. No runner means
+            /// this build cannot replay -- fail the session loudly instead.
+            if (nw.runner == NULL) {
+                OSReport("nw: REPLAY(%d) but no tick runner\n", k);
+                goto fail;
+            }
+
+            nw.replaying = true;
+            while (k-- > 0) {
+                if (!nw_RecvInject()) {
+                    nw.replaying = false;
+                    goto fail;
+                }
+                nw.runner();
+            }
+            nw.replaying = false;
+        }
+    }
+
+    if (!nw_RecvInject()) {
+        goto fail;
     }
 
     nw.tick += 1;

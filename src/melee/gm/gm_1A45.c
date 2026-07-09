@@ -262,6 +262,177 @@ inline u64 maybe_gm_801A48A4(u8 i)
     }
 }
 
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+/// NETPLAY build only: the scene loop's logic tick is factored into
+/// gm_SceneTickBody so rollback replay (nw_netplay.h tick runner) can
+/// deterministically re-run restored ticks. The matching build keeps the
+/// original monolithic gm_801A4D34 in the #else branch below, byte-identical
+/// to retail -- do not let the two drift except for the factoring itself.
+///
+/// One engine logic tick: scene think + GObj procs, everything between the
+/// master-status exchange and the render phase. Rendering is NOT here -- the
+/// scene loop draws once per video frame regardless of how many logic ticks
+/// ran (pad-queue catch-up, replays).
+static void gm_SceneTickBody(void (*arg0)(void));
+
+/// Replay trampoline: nw_ExchangeMaster() re-runs engine ticks through this
+/// after the device restores memory. The scene callback is a loop parameter,
+/// so the loop parks it here each entry.
+static void (*nw_scene_cb)(void);
+static void nw_SceneTickRunner(void)
+{
+    gm_SceneTickBody(nw_scene_cb);
+}
+
+void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
+{
+    int pad_queue_count;
+    int i;
+    struct gm_80479D58_t* temp_r25;
+
+    PAD_STACK(28);
+
+    temp_r25 = &gm_80479D58;
+    gm_801677C0(&temp_r25->unk_10);
+    gm_80479D58.unk_0 = 0;
+    gm_80479D58.unk_4 = 0;
+    gm_80479D58.unk_8 = 0;
+    gm_80479D58.unk_C = 0;
+    HSD_PadFlushQueue(HSD_PAD_FLUSH_QUEUE_LEAVE1);
+    lb_8001CF18();
+
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+    nw_scene_cb = arg0;
+    nw_SetTickRunner(nw_SceneTickRunner);
+#endif
+
+    while (temp_r25->unk_C == 0) {
+        hsd_80392E80();
+        gmMainLib_8046B0F0.xC = false;
+
+        while ((pad_queue_count = lb_80019894()) == 0) {
+            lb_800195D0();
+        }
+        lb_800195D0();
+
+        if (HSD_PadGetResetSwitch()) {
+            gmMainLib_8046B0F0.resetting = true;
+            break;
+        }
+
+        for (i = 0; i < pad_queue_count; i++) {
+            HSD_PerfSetStartTime();
+            lb_800198E0();
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+            /// Lockstep netplay: substitute the agreed frame-indexed master
+            /// entries before copy/game fanout and the logic tick consume
+            /// them. May internally re-run restored ticks (replay) through
+            /// gm_SceneTickBody. Hook lives here (gm/) and NOT in sysdolphin
+            /// -- see nw_netplay.h.
+            nw_ExchangeMaster();
+#endif
+            gm_SceneTickBody(arg0);
+            gmMainLib_8046B0F0.xC = false;
+            if (temp_r25->unk_C != 0) {
+                break;
+            }
+        }
+        if (temp_r25->unk_C == 2) {
+            break;
+        }
+
+        lb_800195D0();
+        GXInvalidateVtxCache();
+        GXInvalidateTexAll();
+        HSD_StartRender(HSD_RP_SCREEN);
+        HSD_GObj_80390FC0();
+        HSD_Init_803755A8();
+        HSD_PerfSetDrawTime();
+        HSD_VICopyXFBAsync(HSD_RP_SCREEN);
+        if (temp_r25->unk_4 != -2U) {
+            temp_r25->unk_4++;
+        }
+        db_TakeScreenshotIfPending();
+        HSD_PerfSetTotalTime();
+        HSD_PerfInitStat();
+    }
+    HSD_VIWaitXFBFlush();
+}
+
+static void gm_SceneTickBody(void (*arg0)(void))
+{
+    struct gm_80479D58_t* temp_r25 = &gm_80479D58;
+
+    {
+            if (DbLevel >= 3) {
+                gm_801A4970(temp_r25->unk_10.x4);
+            }
+            if (gm_801A46B8(0) || !gm_801A45E8(0)) {
+                temp_r25->unk_10.unk_38_0 = true;
+            } else {
+                temp_r25->unk_10.unk_38_0 = false;
+            }
+            if (gm_80479D58.unk_10.unk_38_0) {
+                lb_80019900();
+                if (lb_80019A30(0)) {
+                    gm_801A3A74();
+                }
+                if (lb_80019A30(0) && (arg0 != NULL)) {
+                    arg0();
+                }
+            }
+            if (gm_80479D58.unk_10.x0 != gm_80479D58.unk_10.x1 ||
+                temp_r25->unk_10.x2 != temp_r25->unk_10.x3)
+            {
+                temp_r25->unk_10.unk_20 =
+                    maybe_gm_801A48A4(temp_r25->unk_10.x0);
+                temp_r25->unk_10.x1 = temp_r25->unk_10.x0;
+                temp_r25->unk_10.x3 = temp_r25->unk_10.x2;
+                temp_r25->unk_10.x2 = 0;
+            }
+            temp_r25->unk_10.unk_28 = temp_r25->unk_10.unk_20;
+            if (lb_80019A30(0) == 0) {
+                temp_r25->unk_10.unk_28 |=
+                    gm_803DA8C8[temp_r25->unk_10.unk_34];
+            }
+            if (lb_80019A30(1) == 0) {
+                temp_r25->unk_10.unk_28 |=
+                    ~gm_803DA8C8[temp_r25->unk_10.unk_34];
+            }
+            if (DbLevel >= 3) {
+                db_CheckScreenshot();
+            }
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+            /// Audio must not re-fire while re-running restored ticks: the
+            /// sound engine's state is real-time (excluded from rollback
+            /// restore), so a replayed tick would double-submit its audio.
+            if (!nw_IsReplaying()) {
+                lbAudioAx_80027DF8();
+            }
+#else
+            lbAudioAx_80027DF8();
+#endif
+            if (temp_r25->unk_10.unk_30 != NULL) {
+                temp_r25->unk_10.unk_30();
+            }
+            HSD_GObj_80390CFC();
+            if (temp_r25->unk_0 != -2) {
+                temp_r25->unk_0++;
+            }
+            if (gm_80479D58.unk_10.unk_38_0 && (lb_80019A30(0) != 0)) {
+                if (temp_r25->unk_8 != -2) {
+                    temp_r25->unk_8++;
+                }
+            }
+            HSD_PerfSetCPUTime();
+            if (DbLevel >= 3) {
+                OSCheckActiveThreads();
+            }
+    }
+}
+
+#else /* !NETPLAY: the retail scene loop, byte-identical when compiled */
+
 void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
 {
     int pad_queue_count;
@@ -296,13 +467,6 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
         for (i = 0; i < pad_queue_count; i++) {
             HSD_PerfSetStartTime();
             lb_800198E0();
-#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
-            /// Lockstep netplay: substitute the agreed frame-indexed master
-            /// entries before copy/game fanout and the logic tick consume
-            /// them. Hook lives here (gm/) and NOT in sysdolphin — see
-            /// nw_netplay.h.
-            nw_ExchangeMaster();
-#endif
             if (DbLevel >= 3) {
                 gm_801A4970(temp_r25->unk_10.x4);
             }
@@ -384,3 +548,5 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
     }
     HSD_VIWaitXFBFlush();
 }
+
+#endif /* NETPLAY */

@@ -10,8 +10,8 @@
 /// Both peers run this DOL in lockstep from boot: nw_Init() handshakes with
 /// the host-side device (EXI_DeviceMeleeNetplay in the Dolphin fork) to obtain
 /// the shared RNG seed, input delay, and port assignment; thereafter
-/// nw_ExchangeMaster() — called from the frame loop right after
-/// lb_800198E0()'s master-status renew — replaces HSD_PadMasterStatus[] with
+/// nw_ExchangeMaster() -- called from the frame loop right after
+/// lb_800198E0()'s master-status renew -- replaces HSD_PadMasterStatus[] with
 /// the agreed frame-indexed entries for the current tick. Exchanging the full
 /// post-transform HSD_PadStatus keeps each port's derived state (trigger/
 /// release/repeat, normalized floats) consistent: the port owner computes it
@@ -41,6 +41,22 @@ u32 nw_GetSeed(void);
 /// snapshot for tick+delay, block until the agreed entries for the current
 /// tick arrive (lockstep stall), and overwrite HSD_PadMasterStatus[] with
 /// them. No-op when inactive; drops to inactive on device failure.
+///
+/// Rollback (protocol v3): the device may answer the readiness poll with a
+/// REPLAY directive after it restored memory K ticks back. This function
+/// then re-runs K logic ticks itself -- injecting the recorded agreed inputs
+/// and invoking the tick runner for each -- before completing the current
+/// tick normally. The caller notices nothing.
 void nw_ExchangeMaster(void);
+
+/// The gm scene loop registers its factored tick body here so replays can
+/// re-run engine ticks without layering nw into gm's internals.
+typedef void (*nw_TickRunner)(void);
+void nw_SetTickRunner(nw_TickRunner runner);
+
+/// True while nw_ExchangeMaster() is re-running restored ticks. The frame
+/// loop uses this to gate side effects that must not re-fire during replay
+/// (audio submission).
+bool nw_IsReplaying(void);
 
 #endif
