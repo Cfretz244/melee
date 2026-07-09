@@ -171,7 +171,7 @@ int main(void)
     HSD_InitComponent();
     GXSetMisc(1, 8);
     *seed_ptr = OSGetTick();
-#ifdef NETPLAY
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
     /// Lockstep netplay: both peers must boot with the host-chosen seed.
     nw_Init();
     if (nw_IsActive()) {

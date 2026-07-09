@@ -11,6 +11,10 @@
 #include "if/ifcoget.h"
 #include "lb/lb_0195.h"
 #include "lb/lbaudio_ax.h"
+
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+#include "nw/nw_netplay.h"
+#endif
 #include "lb/lbcardgame.h"
 #include "lb/lbheap.h"
 #include "lb/lbspdisplay.h"
@@ -292,6 +296,13 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
         for (i = 0; i < pad_queue_count; i++) {
             HSD_PerfSetStartTime();
             lb_800198E0();
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+            /// Lockstep netplay: substitute the agreed frame-indexed master
+            /// entries before copy/game fanout and the logic tick consume
+            /// them. Hook lives here (gm/) and NOT in sysdolphin — see
+            /// nw_netplay.h.
+            nw_ExchangeMaster();
+#endif
             if (DbLevel >= 3) {
                 gm_801A4970(temp_r25->unk_10.x4);
             }

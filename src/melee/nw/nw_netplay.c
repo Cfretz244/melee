@@ -4,6 +4,7 @@
 
 #include <dolphin/exi.h>
 #include <dolphin/os.h>
+#include <dolphin/pad.h>
 
 #include "melee/pl/forward.h"
 #include "melee/pl/player.h"
@@ -26,15 +27,17 @@
 #define NW_CMD_CHECKSUM 0x05
 
 #define NW_MAGIC 0x4D4E4554 /* 'MNET' */
-#define NW_PROTO_VERSION 1
+#define NW_PROTO_VERSION 2
 #define NW_CHECKSUM_INTERVAL 60
+
+/// Exchange unit: one full post-transform HSD_PadStatus per port.
+#define NW_PAD_BYTES sizeof(HSD_PadStatus) /* 0x44 */
+/// DMA payload: u32 tick + 4 pads, padded to a 32-byte multiple.
+#define NW_XFER_BYTES 288
 
 /// Match state checksum source; no extern in player.h (game code goes through
 /// accessors), so declare it ourselves.
 extern StaticPlayer player_slots[PL_SLOT_MAX];
-
-/// RNG seed word (sysdolphin/baselib/random.c).
-extern u32* seed_ptr;
 
 static struct {
     bool active;
@@ -47,7 +50,7 @@ static struct {
 
 /// One shared bounce buffer for all EXI DMA (transactions are sequential).
 /// GC EXI DMA requires 32-byte alignment and 32-byte-multiple lengths.
-static u8 nw_dma_buf[64] ATTRIBUTE_ALIGN(32);
+static u8 nw_dma_buf[NW_XFER_BYTES] ATTRIBUTE_ALIGN(32);
 
 bool nw_IsActive(void)
 {
@@ -152,7 +155,7 @@ static u32 nw_StateChecksum(void)
     return hash;
 }
 
-void nw_ExchangePads(PADStatus* pads)
+void nw_ExchangeMaster(void)
 {
     u32 ready;
     int i;
@@ -161,17 +164,20 @@ void nw_ExchangePads(PADStatus* pads)
         return;
     }
 
-    /// Schedule the local sample for tick + delay and ship it to the peer.
+    /// Schedule the local post-transform snapshot for tick + delay and ship
+    /// it to the peer (the device loops our own ports back at that tick).
     memset(nw_dma_buf, 0, sizeof(nw_dma_buf));
     *(u32*) &nw_dma_buf[0] = nw.tick + nw.delay;
-    memcpy(&nw_dma_buf[4], pads, 4 * sizeof(PADStatus));
-    if (!nw_Transact(NW_CMD_SEND, nw_dma_buf, 64, NW_EXI_WRITE, NULL)) {
+    memcpy(&nw_dma_buf[4], HSD_PadMasterStatus, 4 * NW_PAD_BYTES);
+    if (!nw_Transact(NW_CMD_SEND, nw_dma_buf, NW_XFER_BYTES, NW_EXI_WRITE,
+                     NULL))
+    {
         goto fail;
     }
 
-    /// Block until the agreed inputs for the current tick arrive (the device
-    /// pre-seeds ticks 0..delay-1 with neutral pads, so this never deadlocks
-    /// at boot). This spin is the lockstep stall.
+    /// Block until the agreed entries for the current tick arrive (the
+    /// device pre-seeds ticks 0..delay-1 with neutral pads, so this never
+    /// deadlocks at boot). This spin is the lockstep stall.
     do {
         ready = 0;
         if (!nw_Transact(NW_CMD_POLL, NULL, 0, 0, &ready)) {
@@ -179,15 +185,17 @@ void nw_ExchangePads(PADStatus* pads)
         }
     } while (ready == 0);
 
-    if (!nw_Transact(NW_CMD_RECV, nw_dma_buf, 64, NW_EXI_READ, NULL)) {
+    if (!nw_Transact(NW_CMD_RECV, nw_dma_buf, NW_XFER_BYTES, NW_EXI_READ,
+                     NULL))
+    {
         goto fail;
     }
-    memcpy(pads, nw_dma_buf, 4 * sizeof(PADStatus));
+    memcpy(HSD_PadMasterStatus, nw_dma_buf, 4 * NW_PAD_BYTES);
 
     /// Ports with no participant must read as unplugged, not neutral.
     for (i = 0; i < 4; i++) {
         if (!(nw.combined_mask & (1 << i))) {
-            pads[i].err = PAD_ERR_NO_CONTROLLER;
+            HSD_PadMasterStatus[i].err = PAD_ERR_NO_CONTROLLER;
         }
     }
 
@@ -195,7 +203,7 @@ void nw_ExchangePads(PADStatus* pads)
 
     /// Periodic divergence check; the device cross-compares with the peer.
     if (nw.tick % NW_CHECKSUM_INTERVAL == 0) {
-        memset(nw_dma_buf, 0, sizeof(nw_dma_buf));
+        memset(nw_dma_buf, 0, 32);
         *(u32*) &nw_dma_buf[0] = nw.tick;
         *(u32*) &nw_dma_buf[4] = nw_StateChecksum();
         if (!nw_Transact(NW_CMD_CHECKSUM, nw_dma_buf, 32, NW_EXI_WRITE, NULL))

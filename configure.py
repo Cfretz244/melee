@@ -272,6 +272,9 @@ if args.bugfix:
     cflags_base.append("-DBUGFIX")
 if args.netplay:
     cflags_base.append("-DNETPLAY")
+    import os as _os
+    if _os.environ.get("NETPLAY_NO_HOOKS"):
+        cflags_base.append("-DNETPLAY_NO_HOOKS")
 
 cflags_base.append(f"-maxerrors {args.max_errors}")
 if args.max_errors == 0:
