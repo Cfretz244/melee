@@ -2,6 +2,10 @@
 
 #include "gm_unsplit.h"
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
+
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/displayfunc.h>
 #include <sysdolphin/baselib/fog.h>
@@ -162,6 +166,17 @@ HSD_GObj* gmTitle_801A165C(void)
     }
     gm_801692E8(lbTime_8000AFBC(), &sp8);
     second = sp8.second;
+#ifdef NETPLAY
+    /* Retail stirs the RNG once per second-of-clock as an entropy source.
+     * Under netplay the peers' emulated clocks drift apart (rollback replays
+     * re-execute ticks, advancing the time base), so a clock-conditioned
+     * roll count forks the shared seed at the next title/attract pass.
+     * The seed is already exchanged at the session handshake; skip the stir.
+     */
+    if (nw_IsActive()) {
+        second = 0;
+    }
+#endif
     while (second != 0) {
         HSD_Rand();
         second--;
