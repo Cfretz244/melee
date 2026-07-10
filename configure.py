@@ -1027,7 +1027,12 @@ config.libs = [
             Object(Matching, "melee/gm/gmtitle.c"),
             Object(NonMatching, "melee/gm/gmcamera.c"),
             Object(Matching, "melee/gm/gm_1A36.c"),
-            Object(NonMatching, "melee/gm/gm_1A3F.c"),
+            # gm_1A3F.c: NonMatching (retail object linked) in normal builds;
+            # netplay builds must link it from source for the scene barrier's
+            # routing accessor (gm_NwPendingScenePtr). Behavioral equivalence
+            # of the decomp source is exercised by every scene transition.
+            Object(Matching if args.netplay else NonMatching,
+                   "melee/gm/gm_1A3F.c"),
             Object(Matching, "melee/gm/gm_1A45.c"),
             Object(Matching, "melee/gm/gmscdata.c"),
             Object(Matching, "melee/gm/gmmenu.c"),

@@ -58,17 +58,23 @@ static struct {
     u8 scene_ready_out;
     u8 scene_flag_p0;
     u8 scene_flag_p1;
+    /// Scene routing (see NW_PAD_ROUTE_OFF): our outgoing pending-scene
+    /// byte, and the HOST's as served for the current tick.
+    u8 scene_route_out;
+    u8 scene_route_host;
 } nw;
 
 /// The RNG state word (sysdolphin random.c), for the barrier's seed re-sync.
 /// Same extern gmmain.c uses for the boot-time seed override.
 extern s32* seed_ptr;
 
-/// Struct-padding byte inside HSD_PadStatus (0x42..0x43 are alignment tail)
-/// carrying the scene-ready flag. Rides the existing exchange end to end:
-/// delayed with inputs, recorded in the device's replay history, opaque to
-/// the game (never read as pad data) and outside the state checksum.
+/// Struct-padding bytes inside HSD_PadStatus (0x42..0x43 are alignment tail)
+/// carrying the scene-ready flag and the minor-scene routing byte. They ride
+/// the existing exchange end to end: delayed with inputs, recorded in the
+/// device's replay history, opaque to the game (never read as pad data) and
+/// outside the state checksum.
 #define NW_PAD_FLAG_OFF 0x42
+#define NW_PAD_ROUTE_OFF 0x43
 
 /// One shared bounce buffer for all EXI DMA (transactions are sequential).
 /// GC EXI DMA requires 32-byte alignment and 32-byte-multiple lengths.
@@ -207,7 +213,7 @@ bool nw_IsReplaying(void)
     return nw.replaying;
 }
 
-bool nw_SceneBarrier(bool local_done)
+bool nw_SceneBarrier(bool local_done, u8* routing)
 {
     bool both;
 
@@ -215,6 +221,7 @@ bool nw_SceneBarrier(bool local_done)
         return local_done;
     }
     nw.scene_ready_out = local_done ? 1 : 0;
+    nw.scene_route_out = *routing;
     both = nw.scene_flag_p0 != 0 && nw.scene_flag_p1 != 0;
     if (both) {
         /// Release: both flags landed on the same tick on both peers. The
@@ -223,8 +230,14 @@ bool nw_SceneBarrier(bool local_done)
         /// deterministically from shared state before the next scene rolls
         /// anything (the attract-demo character/stage roll is first).
         *seed_ptr = (s32) (nw.seed ^ nw.tick);
+        /// Destination sync: BOTH peers (host included -- its live value may
+        /// be newer than what the delay line delivered) adopt the routing
+        /// byte served from the host's block, so the exit lands both peers
+        /// in the SAME next scene, not just at the same tick (see header).
+        *routing = nw.scene_route_host;
         nw.scene_ready_out = 0;
-        OSReport("nw: scene barrier released at tick %d\n", nw.tick);
+        OSReport("nw: scene barrier released at tick %d route %d\n", nw.tick,
+                 nw.scene_route_host);
     }
     return both;
 }
@@ -249,6 +262,9 @@ static bool nw_RecvInject(void)
     /// current tick runs last and restores them before anyone looks.
     nw.scene_flag_p0 = nw_dma_buf[0 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
     nw.scene_flag_p1 = nw_dma_buf[1 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
+    /// Routing byte from the HOST's block (port 0) -- the destination both
+    /// peers adopt at barrier release.
+    nw.scene_route_host = nw_dma_buf[0 * NW_PAD_BYTES + NW_PAD_ROUTE_OFF];
 
     /// Ports with no participant must read as unplugged, not neutral.
     for (i = 0; i < 4; i++) {
@@ -274,15 +290,18 @@ void nw_ExchangeMaster(void)
     *(u32*) &nw_dma_buf[0] = nw.tick + nw.delay;
     memcpy(&nw_dma_buf[4], HSD_PadMasterStatus, 4 * NW_PAD_BYTES);
     {
-        /// Stamp the scene-barrier flag into our own first owned port's
-        /// block; the device forwards only owned ports, so each peer's flag
-        /// arrives in its conventional slot (host: port 0, client: port 1).
+        /// Stamp the scene-barrier flag and routing byte into our own first
+        /// owned port's block; the device forwards only owned ports, so each
+        /// peer's bytes arrive in its conventional slot (host: port 0,
+        /// client: port 1).
         u32 p = 0;
         while (p < 3 && !(nw.local_mask & (1 << p))) {
             p++;
         }
         nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
             nw.scene_ready_out;
+        nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_ROUTE_OFF] =
+            nw.scene_route_out;
     }
     if (!nw_Transact(NW_CMD_SEND, nw_dma_buf, NW_XFER_BYTES, NW_EXI_WRITE,
                      NULL))

@@ -71,6 +71,21 @@ bool nw_IsReplaying(void);
 /// seed is re-synced from shared state (seed ^ tick), discarding the
 /// roll-count divergence the wait window accumulated while one peer held a
 /// finished scene. Passthrough (returns local_done) when inactive.
-bool nw_SceneBarrier(bool local_done);
+///
+/// @p routing points at the minor-scene routing byte
+/// (GameRouting.pending_scene). It is published alongside the ready flag in
+/// padding byte 0x43, and on release BOTH peers overwrite it with the value
+/// served from the HOST's port block. Exit timing alone is not enough: the
+/// wait window (and stream drift) can leave the peers with DIFFERENT pending
+/// routing at the same synchronized exit -- observed as one peer advancing
+/// the attract loop (demo -> howto movie) while the other wrapped (demo ->
+/// opening movie), a latent fork that only splits the checksum tens of
+/// thousands of ticks later when the divergent scene flows finally roll
+/// different demo casts into player_slots. Both peers adopting the host's
+/// SERVED byte (the host too -- its live value may be newer than what the
+/// delay line delivered) makes the destination identical by construction.
+/// The sequential fallback (pending == 0) is deterministic given equal
+/// curr_scene, and the attract Decide callbacks never write routing.
+bool nw_SceneBarrier(bool local_done, u8* routing);
 
 #endif

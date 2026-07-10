@@ -12,6 +12,11 @@
 /* 1A4284 */ void* gm_801A4284(GameScene*);
 /* 1A428C */ void gm_SetScene(u8 arg0);
 /* 1A42A0 */ void gm_SetPendingScene(u8 pending_scene);
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+/// Raw pending-scene routing byte for the netplay scene barrier (NETPLAY
+/// builds only, where gm_1A3F.c links from source; see gm_1A3F.c).
+u8* gm_NwPendingScenePtr(void);
+#endif
 /* 1A42B4 */ u8 gm_801A42B4(void); ///< get previous scene
 /* 1A42C4 */ u8 gm_801A42C4(void); ///< get current scene
 /* 1A42D4 */ UNK_RET gm_801A42D4(UNK_PARAMS);
