@@ -492,7 +492,13 @@ config.libs = [
             Object(Matching, "melee/lb/lb_01F8.c"),
             Object(NonMatching, "melee/lb/lbbgflash.c"),
             Object(NonMatching, "melee/lb/lbrefract.c"),
-            Object(NonMatching, "melee/lb/lbaudio_ax.c"),
+            # lbaudio_ax.c: NonMatching (retail object linked) in normal
+            # builds; netplay builds must link it from source for the
+            # unconditional pan-direction roll (rollback determinism -- the
+            # retail roll is gated on audio-pool alloc success, which is
+            # real-time-conditioned and forks the RNG walk after replays).
+            Object(Matching if args.netplay else NonMatching,
+                   "melee/lb/lbaudio_ax.c"),
         ],
     ),
     MeleeLib(

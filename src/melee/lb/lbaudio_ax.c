@@ -26,6 +26,10 @@
 #include <melee/lb/lblanguage.h>
 #include <melee/pl/player.h>
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
+
 typedef bool (*lbl_803BCA24_fn)(HSD_GObj*);
 
 int lbAudioAx_8002305C(int arg0, int arg1)
@@ -1923,6 +1927,23 @@ HSD_GObj* lbAudioAx_800263E8(float f1, HSD_GObj* arg1, int sfx_id, int arg3,
     SoundParams params;
 
     if (arg3 < 0x83D60) {
+#ifdef NETPLAY
+        /* Rollback determinism: fn_80025FAC's pan-direction roll only
+         * executes when GObj_Create AND the audio-pool alloc below succeed,
+         * and pool occupancy is real-time-conditioned (voice frees track the
+         * DSP's actual progress, which a rollback replay burst cannot
+         * reproduce). One peer's replay then rolls a different count and the
+         * shared RNG walk forks (R1 smoke #20: fork within 60 ticks of a
+         * depth-6 rollback at fight start, seeds identical before it).
+         * Resolve the random pan up front, unconditionally: identical value
+         * and walk position when the allocs succeed (nothing between here
+         * and the retail roll consumes HSD_Rand), deterministic walk when
+         * they fail. Offline behavior unchanged.
+         */
+        if (nw_IsActive() && f1 == 0.0f) {
+            f1 = (HSD_Randi(2) == 0) ? 1.0f : -1.0f;
+        }
+#endif
         params.gobj = arg1;
         params.x4 = sfx_id;
         params.sfx_id = arg3;
