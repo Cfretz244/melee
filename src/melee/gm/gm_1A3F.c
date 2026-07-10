@@ -180,16 +180,15 @@ void gm_SetPendingScene(u8 pending_scene)
 }
 
 #if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
-/// Netplay scene barrier: direct access to the raw routing byte so
-/// nw_SceneBarrier can publish it with the ready flag and overwrite it with
-/// the host's value at release (see nw/nw_netplay.h). Raw field (0 = none,
-/// else scene+1), unlike gm_SetPendingScene's +1 convention. NOTE: this TU
-/// is linked from source ONLY in --netplay builds (configure.py) -- the
-/// matching build keeps linking the retail object, where this symbol (and
-/// this function) do not exist.
-u8* gm_NwPendingScenePtr(void)
+/// Netplay scene barrier: direct access to the raw GameRouting struct so
+/// nw_SceneBarrier can publish the routing bytes (pending_mode at +1,
+/// pending_scene at +5) with the ready flag and overwrite them with the
+/// host's values at release (see nw/nw_netplay.h). NOTE: this TU is linked
+/// from source ONLY in --netplay builds (configure.py) -- the matching
+/// build keeps linking the retail object, where this symbol does not exist.
+u8* gm_NwRoutingPtr(void)
 {
-    return &gm_80479D30.routing.pending_scene;
+    return &gm_80479D30.routing.curr_mode;
 }
 #endif
 
