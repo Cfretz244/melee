@@ -297,8 +297,13 @@ void nw_ExchangeMaster(void)
     return;
 
 fail:
-    /// Device gone mid-session: drop to offline play with local pads rather
-    /// than hanging the game.
-    OSReport("nw: device failure at tick %d; netplay disabled\n", nw.tick);
+    /// Device gone mid-session. A netplay session must never silently fork
+    /// into two live offline games that each look like the real match --
+    /// freeze this peer instead. The other peer stalls at its next exchange
+    /// when our inputs stop arriving, so both sides end visibly frozen.
+    /// (A user-facing error path can replace the spin later.)
+    OSReport("nw: device failure at tick %d; halting session\n", nw.tick);
     nw.active = false;
+    for (;;) {
+    }
 }
