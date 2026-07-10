@@ -288,6 +288,7 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
 {
     int pad_queue_count;
     int i;
+    int nw_exit_ok;
     struct gm_80479D58_t* temp_r25;
 
     PAD_STACK(28);
@@ -301,12 +302,18 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
     HSD_PadFlushQueue(HSD_PAD_FLUSH_QUEUE_LEAVE1);
     lb_8001CF18();
 
+    nw_exit_ok = 0;
 #if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
     nw_scene_cb = arg0;
     nw_SetTickRunner(nw_SceneTickRunner);
 #endif
 
-    while (temp_r25->unk_C == 0) {
+    /// NETPLAY: a locally-requested scene exit (unk_C) is only honored once
+    /// nw_SceneBarrier releases -- stream-timed exit triggers land on
+    /// different ticks per peer, and exiting unilaterally phase-shifts every
+    /// later scene (see nw_netplay.h). Until release, keep ticking the
+    /// finished scene.
+    while (temp_r25->unk_C == 0 || !nw_exit_ok) {
         hsd_80392E80();
         gmMainLib_8046B0F0.xC = false;
 
@@ -334,7 +341,15 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
             gm_SceneTickBody(arg0);
             gmMainLib_8046B0F0.xC = false;
             if (temp_r25->unk_C != 0) {
-                break;
+                if (temp_r25->unk_C == 2 ||
+                    nw_SceneBarrier(true))
+                {
+                    nw_exit_ok = 1;
+                    break;
+                }
+                /// Exit swallowed: peer not ready yet; keep ticking.
+            } else {
+                nw_SceneBarrier(false);
             }
         }
         if (temp_r25->unk_C == 2) {

@@ -53,7 +53,22 @@ static struct {
     u32 seed;
     u32 tick;
     nw_TickRunner runner;
+    /// Scene barrier (nw_SceneBarrier): our outgoing ready flag, and both
+    /// peers' flags as served for the current tick (see NW_PAD_FLAG_OFF).
+    u8 scene_ready_out;
+    u8 scene_flag_p0;
+    u8 scene_flag_p1;
 } nw;
+
+/// The RNG state word (sysdolphin random.c), for the barrier's seed re-sync.
+/// Same extern gmmain.c uses for the boot-time seed override.
+extern s32* seed_ptr;
+
+/// Struct-padding byte inside HSD_PadStatus (0x42..0x43 are alignment tail)
+/// carrying the scene-ready flag. Rides the existing exchange end to end:
+/// delayed with inputs, recorded in the device's replay history, opaque to
+/// the game (never read as pad data) and outside the state checksum.
+#define NW_PAD_FLAG_OFF 0x42
 
 /// One shared bounce buffer for all EXI DMA (transactions are sequential).
 /// GC EXI DMA requires 32-byte alignment and 32-byte-multiple lengths.
@@ -192,6 +207,28 @@ bool nw_IsReplaying(void)
     return nw.replaying;
 }
 
+bool nw_SceneBarrier(bool local_done)
+{
+    bool both;
+
+    if (!nw.active) {
+        return local_done;
+    }
+    nw.scene_ready_out = local_done ? 1 : 0;
+    both = nw.scene_flag_p0 != 0 && nw.scene_flag_p1 != 0;
+    if (both) {
+        /// Release: both flags landed on the same tick on both peers. The
+        /// wait window ran divergent code (one peer held a finished scene
+        /// while the other caught up), so roll counts may differ -- re-seed
+        /// deterministically from shared state before the next scene rolls
+        /// anything (the attract-demo character/stage roll is first).
+        *seed_ptr = (s32) (nw.seed ^ nw.tick);
+        nw.scene_ready_out = 0;
+        OSReport("nw: scene barrier released at tick %d\n", nw.tick);
+    }
+    return both;
+}
+
 /// RECV the device's serve-tick entries and swap them into master. Shared by
 /// the normal per-tick path and replay re-runs (the device serves recorded
 /// history while replaying).
@@ -205,6 +242,13 @@ static bool nw_RecvInject(void)
         return false;
     }
     memcpy(HSD_PadMasterStatus, nw_dma_buf, 4 * NW_PAD_BYTES);
+
+    /// Scene-barrier flags for the served tick (host stamps port 0's block,
+    /// client port 1's; see nw_SceneBarrier). Replay re-injection overwrites
+    /// these with historical values, but the post-replay inject of the
+    /// current tick runs last and restores them before anyone looks.
+    nw.scene_flag_p0 = nw_dma_buf[0 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
+    nw.scene_flag_p1 = nw_dma_buf[1 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
 
     /// Ports with no participant must read as unplugged, not neutral.
     for (i = 0; i < 4; i++) {
@@ -229,6 +273,17 @@ void nw_ExchangeMaster(void)
     memset(nw_dma_buf, 0, sizeof(nw_dma_buf));
     *(u32*) &nw_dma_buf[0] = nw.tick + nw.delay;
     memcpy(&nw_dma_buf[4], HSD_PadMasterStatus, 4 * NW_PAD_BYTES);
+    {
+        /// Stamp the scene-barrier flag into our own first owned port's
+        /// block; the device forwards only owned ports, so each peer's flag
+        /// arrives in its conventional slot (host: port 0, client: port 1).
+        u32 p = 0;
+        while (p < 3 && !(nw.local_mask & (1 << p))) {
+            p++;
+        }
+        nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
+            nw.scene_ready_out;
+    }
     if (!nw_Transact(NW_CMD_SEND, nw_dma_buf, NW_XFER_BYTES, NW_EXI_WRITE,
                      NULL))
     {

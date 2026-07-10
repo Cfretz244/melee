@@ -59,4 +59,18 @@ void nw_SetTickRunner(nw_TickRunner runner);
 /// (audio submission).
 bool nw_IsReplaying(void);
 
+/// Scene-exit barrier. Stream-timed exit triggers (movie/THP end, load
+/// completion) land on DIFFERENT ticks per peer once their cycle histories
+/// differ (rollback replays execute real cycles), so honoring a scene exit
+/// the tick it fires phase-shifts every later scene and splits the state
+/// checksum at the next fight. Call every tick with the local exit decision:
+/// the flag rides a struct-padding byte (0x42) of our own port's block in
+/// the input exchange -- delayed, recorded and replayed exactly like inputs
+/// -- and this returns true only on the first tick BOTH peers' flags are up,
+/// which is the same tick on both sides by construction. On release the RNG
+/// seed is re-synced from shared state (seed ^ tick), discarding the
+/// roll-count divergence the wait window accumulated while one peer held a
+/// finished scene. Passthrough (returns local_done) when inactive.
+bool nw_SceneBarrier(bool local_done);
+
 #endif
