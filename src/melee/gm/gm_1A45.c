@@ -343,14 +343,14 @@ void gm_801A4D34(void (*arg0)(void), GameSceneInfo* arg1)
             gmMainLib_8046B0F0.xC = false;
             if (temp_r25->unk_C != 0) {
                 if (temp_r25->unk_C == 2 ||
-                    nw_SceneBarrier(true, gm_NwRoutingPtr()))
+                    nw_SceneBarrier(true, gm_NwPendingScenePtr()))
                 {
                     nw_exit_ok = 1;
                     break;
                 }
                 /// Exit swallowed: peer not ready yet; keep ticking.
             } else {
-                nw_SceneBarrier(false, gm_NwRoutingPtr());
+                nw_SceneBarrier(false, gm_NwPendingScenePtr());
             }
         }
         if (temp_r25->unk_C == 2) {

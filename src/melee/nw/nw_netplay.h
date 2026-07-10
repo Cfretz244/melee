@@ -72,12 +72,10 @@ bool nw_IsReplaying(void);
 /// roll-count divergence the wait window accumulated while one peer held a
 /// finished scene. Passthrough (returns local_done) when inactive.
 ///
-/// @p routing points at the GameRouting struct base (curr_mode). The
-/// pending_mode byte (+1) rides the ready-flag padding byte's high bits and
-/// pending_scene (+5) rides padding byte 0x43; on release BOTH peers
-/// overwrite both with the values served from the HOST's port block --
-/// major-MODE switches choose destinations exactly like minor scenes do,
-/// and an unsynced mode strands the peers in different modes (wedge). Exit timing alone is not enough: the
+/// @p routing points at the minor-scene routing byte
+/// (GameRouting.pending_scene). It is published alongside the ready flag in
+/// padding byte 0x43, and on release BOTH peers overwrite it with the value
+/// served from the HOST's port block. Exit timing alone is not enough: the
 /// wait window (and stream drift) can leave the peers with DIFFERENT pending
 /// routing at the same synchronized exit -- observed as one peer advancing
 /// the attract loop (demo -> howto movie) while the other wrapped (demo ->

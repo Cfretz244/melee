@@ -233,15 +233,9 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
     if (!nw.active) {
         return local_done;
     }
-    /// Flag byte packs the ready bit with pending_mode (GameRouting +1,
-    /// values fit 7 bits): MAJOR-mode switches choose the next mode the way
-    /// pending_scene chooses the next minor scene, and an unsynced mode
-    /// destination strands the peers in different modes -- observed as a
-    /// both-peer wedge with the host in mode 0 (title) while the client
-    /// still ticked the attract demo (R1 smoke #16).
-    nw.scene_ready_out = (u8) ((local_done ? 1 : 0) | (routing[1] << 1));
-    nw.scene_route_out = routing[5];
-    both = (nw.scene_flag_p0 & 1) != 0 && (nw.scene_flag_p1 & 1) != 0;
+    nw.scene_ready_out = local_done ? 1 : 0;
+    nw.scene_route_out = *routing;
+    both = nw.scene_flag_p0 != 0 && nw.scene_flag_p1 != 0;
     if (both) {
         /// Release: both flags landed on the same tick on both peers. The
         /// wait window ran divergent code (one peer held a finished scene
@@ -251,13 +245,12 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
         *seed_ptr = (s32) (nw.seed ^ nw.tick);
         /// Destination sync: BOTH peers (host included -- its live value may
         /// be newer than what the delay line delivered) adopt the routing
-        /// bytes served from the host's block, so the exit lands both peers
-        /// in the SAME next mode AND minor scene, not just at the same tick.
-        routing[1] = (u8) (nw.scene_flag_p0 >> 1); /* pending_mode */
-        routing[5] = nw.scene_route_host;          /* pending_scene */
+        /// byte served from the host's block, so the exit lands both peers
+        /// in the SAME next scene, not just at the same tick (see header).
+        *routing = nw.scene_route_host;
         nw.scene_ready_out = 0;
-        OSReport("nw: scene barrier released at tick %d mode %d route %d\n",
-                 nw.tick, routing[1], nw.scene_route_host);
+        OSReport("nw: scene barrier released at tick %d route %d\n", nw.tick,
+                 nw.scene_route_host);
     }
     return both;
 }
