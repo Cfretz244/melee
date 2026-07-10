@@ -288,6 +288,28 @@ static bool nw_RecvInject(void)
     return true;
 }
 
+/// Per-tick deterministic RNG base: seed = f(session seed, tick), applied at
+/// every tick's exchange point (and per replayed tick) on BOTH peers.
+///
+/// Why: some RNG roll BUNDLES are conditioned on state that render-phase
+/// code writes from real-time counters (e.g. particle spawns skip their
+/// whole rolling setup when HSD_ObjAlloc fails, and pool pressure tracks
+/// display-frame aging). A rollback replay runs tick bodies with NO renders
+/// interleaved, so those bundles can fire differently than the original
+/// pass -- shifting the shared LCG walk even though every affected roll is
+/// VFX-only (torture/R1 forks: 4-8 rolls off inside one replayed tick).
+/// Masking can't fix a walk offset; reseeding per tick makes the walk
+/// tick-deterministic, so any non-sim roll-count divergence heals at the
+/// next tick boundary instead of compounding forever.
+///
+/// Residual exposure: a sim-consequential roll (item spawn, turnip...) in
+/// the SAME tick AFTER a diverged VFX bundle still reads a shifted value.
+/// Netplay-only (nw.active); retail walk continuity is not preserved.
+static void nw_ReseedTick(u32 tick)
+{
+    *seed_ptr = (s32) (nw.seed ^ (tick * 0x9E3779B9u));
+}
+
 void nw_ExchangeMaster(void)
 {
     u32 poll;
@@ -343,6 +365,10 @@ void nw_ExchangeMaster(void)
         }
         if (status == NW_POLL_REPLAY) {
             u32 k = poll & 0xFFFFFF;
+            /// Replayed serves cover ticks [nw.tick - k, nw.tick): the
+            /// device rewound its serve cursor k back; nw.tick itself is
+            /// served by the READY path after the loop.
+            u32 replay_tick = nw.tick - k;
 
             /// The device has already rewound its serve tick; dropping the
             /// directive would skew tick numbering forever. No runner means
@@ -358,6 +384,8 @@ void nw_ExchangeMaster(void)
                     nw.replaying = false;
                     goto fail;
                 }
+                nw_ReseedTick(replay_tick);
+                replay_tick += 1;
                 nw.runner();
             }
             nw.replaying = false;
@@ -367,6 +395,7 @@ void nw_ExchangeMaster(void)
     if (!nw_RecvInject()) {
         goto fail;
     }
+    nw_ReseedTick(nw.tick);
 
     nw.tick += 1;
 
