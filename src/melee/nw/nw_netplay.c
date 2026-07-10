@@ -150,14 +150,34 @@ void nw_Init(void)
 
 /// Simple FNV-1a over the persistent per-player match state. Both peers run
 /// identical code, so only peer-vs-peer equality matters.
+///
+/// The award-stats tail of each slot (0xDB0..0xE90, the unnamed region past
+/// StaleMoveTable) is skipped: plbonuslib accumulators there read HUD state
+/// that the render phase rewrites once per VIDEO frame (e.g. the magnify
+/// bubble via ifMagnify_802FB6E8 -> xD30 off-screen frame counter), so a
+/// rollback replay -- which re-runs logic ticks but not render phases --
+/// legitimately reproduces different counts. Results-screen bookkeeping
+/// only; nothing in the fight sim reads it back. Known artifact: peers can
+/// disagree on special-award tallies after rollbacks (and Bonus Mode
+/// scoring would genuinely diverge -- out of scope).
+#define NW_SLOT_STATS_START 0xDB0
+#define NW_SLOT_STATS_END 0xE90
+
 static u32 nw_StateChecksum(void)
 {
-    const u8* p = (const u8*) player_slots;
     u32 hash = 0x811C9DC5;
-    u32 i;
+    u32 slot;
+    u32 off;
 
-    for (i = 0; i < sizeof(player_slots); i++) {
-        hash = (hash ^ p[i]) * 0x01000193;
+    for (slot = 0; slot < PL_SLOT_MAX; slot++) {
+        const u8* p = (const u8*) &player_slots[slot];
+        for (off = 0; off < sizeof(StaticPlayer); off++) {
+            if (off == NW_SLOT_STATS_START) {
+                off = NW_SLOT_STATS_END - 1;
+                continue;
+            }
+            hash = (hash ^ p[off]) * 0x01000193;
+        }
     }
     return hash;
 }
