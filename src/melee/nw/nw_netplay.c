@@ -172,17 +172,26 @@ void nw_Init(void)
 /// Simple FNV-1a over the persistent per-player match state. Both peers run
 /// identical code, so only peer-vs-peer equality matters.
 ///
-/// The award-stats tail of each slot (0xDB0..0xE90, the unnamed region past
-/// StaleMoveTable) is skipped: plbonuslib accumulators there read HUD state
-/// that the render phase rewrites once per VIDEO frame (e.g. the magnify
-/// bubble via ifMagnify_802FB6E8 -> xD30 off-screen frame counter), so a
-/// rollback replay -- which re-runs logic ticks but not render phases --
-/// legitimately reproduces different counts. Results-screen bookkeeping
-/// only; nothing in the fight sim reads it back. Known artifact: peers can
-/// disagree on special-award tallies after rollbacks (and Bonus Mode
-/// scoring would genuinely diverge -- out of scope).
-#define NW_SLOT_STATS_START 0xDB0
-#define NW_SLOT_STATS_END 0xE90
+/// RENDER-PHASE-WRITTEN spans of each slot are skipped: bytes the render
+/// phase rewrites once per VIDEO frame diverge whenever the peers' video-
+/// frame-to-tick alignment differs -- benign under symmetric lockstep, but
+/// R1 rollback parks one peer at POLL for stretches while its render loop
+/// keeps drawing, so these bytes desync the hash at fully identical sim
+/// state + RNG (proven: seeds byte-equal through the desync tick, dump diff
+/// hit only these spans + downstream).
+/// - 0x10..0x1C: player_poses.nametag_pos (floating name tag, interpolated
+///   per video frame; pure UI).
+/// - 0xD30..0xEB0: the bookkeeping tail past StaleMoveTable -- plbonuslib
+///   accumulators reading HUD state (magnify bubble counter etc.) plus its
+///   unnamed float/word neighbors (+0xD59, +0xEA1 observed diverging on
+///   both cached-core and jit runs). Results-screen bookkeeping only;
+///   nothing in the fight sim reads it back. Known artifact: peers can
+///   disagree on special-award tallies after rollbacks (and Bonus Mode
+///   scoring would genuinely diverge -- out of scope).
+#define NW_SLOT_NAMETAG_START 0x10
+#define NW_SLOT_NAMETAG_END 0x1C
+#define NW_SLOT_STATS_START 0xD30
+#define NW_SLOT_STATS_END 0xEB0
 
 static u32 nw_StateChecksum(void)
 {
@@ -193,6 +202,10 @@ static u32 nw_StateChecksum(void)
     for (slot = 0; slot < PL_SLOT_MAX; slot++) {
         const u8* p = (const u8*) &player_slots[slot];
         for (off = 0; off < sizeof(StaticPlayer); off++) {
+            if (off == NW_SLOT_NAMETAG_START) {
+                off = NW_SLOT_NAMETAG_END - 1;
+                continue;
+            }
             if (off == NW_SLOT_STATS_START) {
                 off = NW_SLOT_STATS_END - 1;
                 continue;
