@@ -418,16 +418,21 @@ static void gm_SceneTickBody(void (*arg0)(void))
             if (DbLevel >= 3) {
                 db_CheckScreenshot();
             }
-#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
-            /// Audio must not re-fire while re-running restored ticks: the
-            /// sound engine's state is real-time (excluded from rollback
-            /// restore), so a replayed tick would double-submit its audio.
-            if (!nw_IsReplaying()) {
-                lbAudioAx_80027DF8();
-            }
-#else
+            /// Audio runs during replays too (NETPLAY): the game-side audio
+            /// pool IS in the restored region set, so a replay that skips
+            /// this frame update misses the voice FREES the original pass
+            /// performed -- post-replay pool occupancy then differs from a
+            /// straight-through execution, and lb audio code rolls HSD_Rand
+            /// conditioned on pool state, forking the peers' RNG walks
+            /// (observed: every R1 rollback desynced within seconds; torture
+            /// mostly dodged it because identical-input replays re-submit
+            /// identical SFX). Running it ungated makes pool evolution
+            /// byte-equal to a straight-through run with the corrected
+            /// inputs. Cost: a rolled-back tick's SFX can start twice on the
+            /// DSP side (device AX state is not rewound) -- an audible
+            /// rollback artifact, not sim state; every rollback
+            /// implementation has an equivalent.
             lbAudioAx_80027DF8();
-#endif
             if (temp_r25->unk_10.unk_30 != NULL) {
                 temp_r25->unk_10.unk_30();
             }
