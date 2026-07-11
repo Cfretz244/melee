@@ -84,6 +84,42 @@ extern struct lbl_8046B6A0_t* gm_8016AE38(void);
 /// Remaining match timer in seconds; false when the match is untimed.
 extern int GetMatchTimer(int*);
 
+/// HSD synth PStream busy flag (synth.c) and the DevCom DVD-pump busy flag
+/// (devcom.c). Rollback churn can strand the PStream flag set: a
+/// speculative tick sets it and its clearing request is lost to the
+/// rollback while the flag (live audio state, excluded from restore) stays
+/// 1 with nothing outstanding -- the next PStream op (the GAME! victory
+/// music switch) then spins forever INSIDE a tick body (v20c r3q2: both
+/// peers, same tick, flag=1, DevCom and dvd.o idle). Salvage per exchange,
+/// debounced: flag set with the pump idle for a full second means nothing
+/// will ever clear it. Cost of a rare false positive: a music op is
+/// retried/skipped; cost of the wedge: the session.
+extern u8 HSD_Synth_804D7778;
+
+static OSAlarm nw_salvage_alarm;
+static u32 nw_pstream_stuck_fires;
+
+/// Periodic OSAlarm handler (interrupt context): the stuck spin runs with
+/// interrupts enabled inside a tick body, so an alarm is the only context
+/// guaranteed to execute during it. ~16ms period; 64 consecutive stuck
+/// observations = ~1s.
+static void nw_SalvageAlarmHandler(OSAlarm* alarm, OSContext* ctx)
+{
+    /// The DevCom pump-busy flag is file-local (not linkable), so debounce
+    /// on the PStream flag alone: legitimate stream ops hold it for
+    /// milliseconds; a full second of continuously-set flag is a strand.
+    if (HSD_Synth_804D7778 != 0) {
+        nw_pstream_stuck_fires += 1;
+        if (nw_pstream_stuck_fires > 64) {
+            HSD_Synth_804D7778 = 0;
+            nw_pstream_stuck_fires = 0;
+            OSReport("nw: cleared stranded PStream flag (salvage alarm)\n");
+        }
+    } else {
+        nw_pstream_stuck_fires = 0;
+    }
+}
+
 /// Match-end quiesce predicate. The GAME!/TIMEOUT transition issues
 /// asset loads (banner, announcer, results-screen preloads) starting a
 /// few ticks BEFORE the match global flips (v18q1: last rollback
@@ -227,6 +263,11 @@ void nw_Init(void)
         nw.combined_mask = 0x3;
         nw.tick = 0;
         nw.active = true;
+
+        /// Audio-flag salvage watchdog (see nw_SalvageAlarmHandler).
+        OSCreateAlarm(&nw_salvage_alarm);
+        OSSetPeriodicAlarm(&nw_salvage_alarm, OSGetTime(),
+                           OSMillisecondsToTicks(16), nw_SalvageAlarmHandler);
 
         OSReport("nw: session up (ports %02x, delay %d)\n", nw.local_mask,
                  nw.delay);
