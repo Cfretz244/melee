@@ -101,7 +101,14 @@ static int nw_MatchEnding(void)
         return 1;
     }
     if (GetMatchTimer(&t)) {
-        if (t <= 5) {
+        /// 15s: the results-scene preload burst starts ~8s before a timer
+        /// end (v19q1: both peers' preloadCache poisoned by rollbacks at
+        /// timer-8s, 3s outside the old 5s lead). The prediction fence
+        /// cannot cover speculation already outstanding when the preload
+        /// delivers, so the stamp must lead the PRELOAD, not the banner.
+        /// Stock endings are unaffected: their preload can only trigger at
+        /// the KO, inside the stocks stamp below.
+        if (t <= 15) {
             return 1;
         }
     } else {
