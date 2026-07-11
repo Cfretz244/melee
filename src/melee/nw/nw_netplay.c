@@ -81,6 +81,39 @@ extern s32* seed_ptr;
 /// keep nw free of the gm type graph (see the quiesce stamp).
 struct lbl_8046B6A0_t;
 extern struct lbl_8046B6A0_t* gm_8016AE38(void);
+/// Remaining match timer in seconds; false when the match is untimed.
+extern int GetMatchTimer(int*);
+
+/// Match-end quiesce predicate. The GAME!/TIMEOUT transition issues
+/// asset loads (banner, announcer, results-screen preloads) starting a
+/// few ticks BEFORE the match global flips (v18q1: last rollback
+/// 16918->16915, quiesce armed 16920, orphaned lbFile load in between).
+/// The end is sim-deterministic, so lead the stamp: timed matches stamp
+/// from 5 seconds remaining; untimed (stock) matches stamp when any
+/// in-game player hits 0 stocks (in timed matches stocks sit at 0 from
+/// the start, hence the gate). Cheap: runs once per SEND.
+static int nw_MatchEnding(void)
+{
+    int t;
+    int slot;
+
+    if (*(volatile u8*) gm_8016AE38() != 0) {
+        return 1;
+    }
+    if (GetMatchTimer(&t)) {
+        if (t <= 5) {
+            return 1;
+        }
+    } else {
+        for (slot = 0; slot < PL_SLOT_MAX; slot++) {
+            StaticPlayer* sp = &player_slots[slot];
+            if (sp->player_state == 2 && sp->stocks <= 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
 
 /// Struct-padding bytes inside HSD_PadStatus (0x42..0x43 are alignment tail)
 /// carrying the scene-ready flag and the minor-scene routing byte. They ride
@@ -384,8 +417,7 @@ void nw_ExchangeMaster(void)
         /// documented first byte of the live match global rather than
         /// pulling in the whole gm type graph.
         nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
-            nw.scene_ready_out |
-            ((*(volatile u8*) gm_8016AE38() != 0) ? 0x80 : 0);
+            nw.scene_ready_out | (nw_MatchEnding() ? 0x80 : 0);
         nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_ROUTE_OFF] =
             nw.scene_route_out;
     }
