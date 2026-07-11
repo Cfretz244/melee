@@ -13,6 +13,10 @@
 #include "inlines.h"
 #include "types.h"
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
+
 #include "baselib/displayfunc.h"
 #include "baselib/gobjobject.h"
 #include "baselib/gobjplink.h"
@@ -668,16 +672,46 @@ void efLib_render_callback(HSD_GObj* gobj, int code)
     psDispParticles(PTCL_RENDER_LINKNO_1, particles_code);
 }
 
+/* v14 visual/sim RNG split, per-frame particle half (v13 covered effect
+ * SPAWNS): these procs run the ptcl bytecode VM per live particle
+ * (hsd_8039CEAC -> bytecode.c HSD_Randi/Randf ops) and the generator
+ * emission update (hsd_8039EE24: gen->count += gen->random * HSD_Randf()
+ * per live generator, per frame). The LIVE POPULATION tracks pool allocs
+ * and free cadence -- real-time state a rollback replay cannot reproduce,
+ * so peers roll different COUNTS every frame their particle sets differ
+ * and the shared sim RNG walk forks (pace6/8/9/10: count-fork within ~90
+ * ticks of a rollback flurry; run-6 MBP callers were particle.o).
+ * Particles and generators are pure visuals -- nothing sim-side reads
+ * them -- so bracketing the procs with seed save/restore decouples them
+ * exactly like the v13 effect-spawn split. */
 void efLib_particles_proc_main(HSD_GObj* gobj)
 {
+#ifdef NETPLAY
+    int nw_seed_armed = nw_IsActive();
+    u32 nw_saved_seed = nw_seed_armed ? nw_SeedSave() : 0;
+#endif
     hsd_8039CEAC(PTCL_SKIP_LINKNO_1 | PTCL_SKIP_LINKNO_2);
     hsd_8039EE24(PTCL_SKIP_LINKNO_1 | PTCL_SKIP_LINKNO_2);
+#ifdef NETPLAY
+    if (nw_seed_armed) {
+        nw_SeedRestore(nw_saved_seed);
+    }
+#endif
 }
 
 void efLib_particles_proc_aux(HSD_GObj* gobj)
 {
+#ifdef NETPLAY
+    int nw_seed_armed = nw_IsActive();
+    u32 nw_saved_seed = nw_seed_armed ? nw_SeedSave() : 0;
+#endif
     hsd_8039CEAC(PTCL_SKIP_LINKNO_0);
     hsd_8039EE24(PTCL_SKIP_LINKNO_0);
+#ifdef NETPLAY
+    if (nw_seed_armed) {
+        nw_SeedRestore(nw_saved_seed);
+    }
+#endif
 }
 
 HSD_Generator* efLib_CreateGenerator(s32 gfx_id, Vec3* pos)
