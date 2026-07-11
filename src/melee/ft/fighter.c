@@ -104,6 +104,10 @@
 #include <MSL/math_ppc.h>
 #include <MSL/trigf.h>
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
+
 extern struct UnkCostumeList CostumeListsForeachCharacter[FTKIND_MAX];
 
 extern MotionState ftData_MotionStateList[ftCo_MS_Count];
@@ -1603,6 +1607,24 @@ void Fighter_8006A360(Fighter_GObj* gobj)
             }
         }
 
+#ifdef NETPLAY
+        /* Rollback determinism: is_offscreen is recomputed by the magnify
+         * interface's RENDER callback (ifMagnify_802FBBDC) once per VIDEO
+         * frame from camera culling. Rollback replays re-run tick bodies
+         * only, so every replayed tick reads the CURRENT frame's value and
+         * the x1910 streak counter drifts across peers (r1b-bdoor run 1:
+         * counters 59 vs 55 at the last hash-agreed tick); the x7AC
+         * threshold then crosses on one peer only and this block deals 1%
+         * flinchless damage there -- sim divergence with clean RNG and
+         * clean inputs (the class-(B) signature). No deterministic in-body
+         * recompute exists (the magnify culling runs against render-cadence
+         * camera CObj state), so under netplay the off-screen chip damage
+         * is disabled on both peers alike. The magnify bubble itself
+         * (render) and the award tallies (checksum-masked) are unaffected.
+         * Offline behavior unchanged.
+         */
+        if (!nw_IsActive())
+#endif
         if (!fp->x221F_b4 && Camera_80031144() == 1.0f) {
             if (fp->dmg.x1830_percent < p_ftCommonData->x7B0) {
                 if (ifMagnify_802FC998(fp->player_id) &&
