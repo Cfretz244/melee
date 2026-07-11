@@ -62,6 +62,14 @@ static struct {
     /// byte, and the HOST's as served for the current tick.
     u8 scene_route_out;
     u8 scene_route_host;
+    /// Post-release drain fence: barrier evaluation is suppressed for ticks
+    /// < this value. Flag bytes ride the exchange delay+prediction pipeline,
+    /// so for up to delay ticks after a release BOTH peers' served flags
+    /// still read "ready" from pre-release stamps; without the fence the
+    /// slower peer re-releases on the stale flags (v16q1: releases at
+    /// 13067/13068/13069 -- re-adopting a stale routing byte and re-rolling
+    /// the seed re-sync on ticks where the exited peer does neither).
+    u32 barrier_drain_until;
 } nw;
 
 /// The RNG state word (sysdolphin random.c), for the barrier's seed re-sync.
@@ -243,6 +251,13 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
     if (!nw.active) {
         return local_done;
     }
+    /// Drain fence: served flag bytes within delay ticks of the previous
+    /// release are stale pre-release stamps (see barrier_drain_until).
+    if (nw.tick < nw.barrier_drain_until) {
+        nw.scene_ready_out = local_done ? 1 : 0;
+        nw.scene_route_out = *routing;
+        return false;
+    }
     nw.scene_ready_out = local_done ? 1 : 0;
     nw.scene_route_out = *routing;
     both = nw.scene_flag_p0 != 0 && nw.scene_flag_p1 != 0;
@@ -259,6 +274,10 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
         /// in the SAME next scene, not just at the same tick (see header).
         *routing = nw.scene_route_host;
         nw.scene_ready_out = 0;
+        /// Served flag bytes for the next delay ticks were stamped before
+        /// this release; suppress re-evaluation until they drain (both
+        /// peers compute the same fence from the same release tick).
+        nw.barrier_drain_until = nw.tick + nw.delay + 1;
         OSReport("nw: scene barrier released at tick %d route %d\n", nw.tick,
                  nw.scene_route_host);
     }
