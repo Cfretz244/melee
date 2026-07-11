@@ -418,21 +418,27 @@ static void gm_SceneTickBody(void (*arg0)(void))
             if (DbLevel >= 3) {
                 db_CheckScreenshot();
             }
-            /// Audio runs during replays too (NETPLAY): the game-side audio
-            /// pool IS in the restored region set, so a replay that skips
-            /// this frame update misses the voice FREES the original pass
-            /// performed -- post-replay pool occupancy then differs from a
-            /// straight-through execution, and lb audio code rolls HSD_Rand
-            /// conditioned on pool state, forking the peers' RNG walks
-            /// (observed: every R1 rollback desynced within seconds; torture
-            /// mostly dodged it because identical-input replays re-submit
-            /// identical SFX). Running it ungated makes pool evolution
-            /// byte-equal to a straight-through run with the corrected
-            /// inputs. Cost: a rolled-back tick's SFX can start twice on the
-            /// DSP side (device AX state is not rewound) -- an audible
-            /// rollback artifact, not sim state; every rollback
-            /// implementation has an equivalent.
+#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
+            /// Audio is GATED during replays (again). History: the original
+            /// gate assumed all sound state was live/excluded; v8 removed it
+            /// because the game-side audio pool was RESTORED then (a gated
+            /// replay skipped the original pass's voice frees and the
+            /// pool-conditioned HSD_Rand rolls forked the walks). The v15e
+            /// table then excluded the WHOLE audio stack (lbaudio_ax pool
+            /// included) -- inverting the argument: with all audio state
+            /// LIVE, a replayed frame update operates on state that already
+            /// advanced past this tick, DOUBLE-evolving it (duplicate SFX
+            /// and music-stream posts, premature stream pumps, DevCom pool
+            /// pressure: the HSD_Synth PStream spin and AX voice-list
+            /// livelocks at 1000-rollback churn). Roll-count divergence from
+            /// skipping pool-conditioned rolls is healed by the per-tick
+            /// reseed (nw_ReseedTick, v13). Offline build unchanged.
+            if (!nw_IsReplaying()) {
+                lbAudioAx_80027DF8();
+            }
+#else
             lbAudioAx_80027DF8();
+#endif
             if (temp_r25->unk_10.unk_30 != NULL) {
                 temp_r25->unk_10.unk_30();
             }
