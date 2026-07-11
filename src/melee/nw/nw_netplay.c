@@ -76,6 +76,12 @@ static struct {
 /// Same extern gmmain.c uses for the boot-time seed override.
 extern s32* seed_ptr;
 
+/// Live match global (lbl_8046B6A0_t); byte 0 is the match-end state
+/// (0 = playing, nonzero = GAME! frozen/finished). Declared opaquely to
+/// keep nw free of the gm type graph (see the quiesce stamp).
+struct lbl_8046B6A0_t;
+extern struct lbl_8046B6A0_t* gm_8016AE38(void);
+
 /// Struct-padding bytes inside HSD_PadStatus (0x42..0x43 are alignment tail)
 /// carrying the scene-ready flag and the minor-scene routing byte. They ride
 /// the existing exchange end to end: delayed with inputs, recorded in the
@@ -260,7 +266,9 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
     }
     nw.scene_ready_out = local_done ? 1 : 0;
     nw.scene_route_out = *routing;
-    both = nw.scene_flag_p0 != 0 && nw.scene_flag_p1 != 0;
+    /// Bit 0 only: bit 7 of the flag byte carries the match-end quiesce
+    /// stamp (see nw_ExchangeMaster), which must never release the barrier.
+    both = (nw.scene_flag_p0 & 1) != 0 && (nw.scene_flag_p1 & 1) != 0;
     if (both) {
         /// Release: both flags landed on the same tick on both peers. The
         /// wait window ran divergent code (one peer held a finished scene
@@ -362,8 +370,22 @@ void nw_ExchangeMaster(void)
         while (p < 3 && !(nw.local_mask & (1 << p))) {
             p++;
         }
+        /// Bit 7: match-end quiesce stamp. From GAME! (match info unk_0
+        /// nonzero: frozen final frame through the finished state) to the
+        /// scene exit, the game issues results-screen loads (HSD synth
+        /// bank ARQ chains, preload reads) whose completion flags live in
+        /// restored heap; a rollback across one orphans it (v17q2: both
+        /// peers wedged post-release, host in HSD_Synth spin). The device
+        /// treats the stamp like an armed barrier fence: prediction
+        /// quiesced, speculation drained -- the whole GAME!-to-exit window
+        /// runs confirmed lockstep. unk_0 flips at the same tick on both
+        /// peers (deterministic sim); it stays 0 for LRA+Start exits
+        /// (residual exposure there, accepted). Layering: read via the
+        /// documented first byte of the live match global rather than
+        /// pulling in the whole gm type graph.
         nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
-            nw.scene_ready_out;
+            nw.scene_ready_out |
+            ((*(volatile u8*) gm_8016AE38() != 0) ? 0x80 : 0);
         nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_ROUTE_OFF] =
             nw.scene_route_out;
     }
