@@ -441,6 +441,18 @@ bool fn_80023ED4(const char* arg0, int arg1, int arg2)
     if (arg2 >= 9) {
         arg2 = 8;
     }
+#ifdef NETPLAY
+    /// No HPS music under netplay: the DVD music stream is fire-and-forget
+    /// real-time I/O whose game-side flags cannot survive rollback in ANY
+    /// state split tried (restored = completion amnesia; live = stranded
+    /// busy flags; the entire v15..v21 wedge tail). Slippi shipped rollback
+    /// with music disabled for years for exactly this reason. SFX,
+    /// announcer, and crowd are ARAM-based and unaffected. Pretend success
+    /// so callers' bookkeeping stays consistent.
+    if (nw_IsActive()) {
+        return true;
+    }
+#endif
     return AXDriver_8038E8EC(arg0, var_r0, arg2);
 }
 
