@@ -11,6 +11,10 @@
 
 #include <dolphin/card.h>
 #include <dolphin/os.h>
+
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+#endif
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/gobj.h>
@@ -232,6 +236,21 @@ void lb_8001CE00(void)
 {
     HSD_ASSERTMSG(0x2A3, lb_80433318.enable, "_p(enable)");
     *gm_GetPowerTime() += gmMainLib_8015FC74();
+#ifdef NETPLAY
+    /* Netplay: never dirty the memory card mid-session. The post-match
+     * records autosave kicks off at GAME! while rollbacks still fire; the
+     * CARD async chain (task array + SDK state machine, interrupt-driven)
+     * cannot survive restores in ANY table configuration tried (restored =
+     * completion amnesia, pace11 run 2; excluded = both peers hang in the
+     * save wait, lat3-w6-100). Records/settings persistence has no place in
+     * a netplay session anyway (Slippi also disables card writes). The
+     * power-time accumulation above stays: gm state, identical on both
+     * peers. Boot-time card LOADS are untouched. Offline build unchanged.
+     */
+    if (nw_IsActive()) {
+        return;
+    }
+#endif
     lb_80433318.xC = true;
 }
 
