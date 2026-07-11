@@ -37,6 +37,13 @@ bool nw_IsActive(void);
 /// The host-chosen shared RNG seed. Valid only while nw_IsActive().
 u32 nw_GetSeed(void);
 
+/// Visual/sim RNG decoupling (v13): save/restore the live RNG state word
+/// (sysdolphin random.c) around effect-spawn dispatch, so effect-pool-
+/// conditioned VFX roll counts cannot shift sim-consequential rolls within
+/// a tick. Callers guard on nw_IsActive().
+u32 nw_SeedSave(void);
+void nw_SeedRestore(u32 saved);
+
 /// Exchange this tick's inputs: schedule the local HSD_PadMasterStatus
 /// snapshot for tick+delay, block until the agreed entries for the current
 /// tick arrive (lockstep stall), and overwrite HSD_PadMasterStatus[] with

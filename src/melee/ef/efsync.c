@@ -14,6 +14,30 @@
 #include "ft/inlines.h"
 #include "MSL/math.h"
 
+#ifdef NETPLAY
+#include "nw/nw_netplay.h"
+
+/* v13 visual/sim RNG split: every effect-spawn path (this dispatcher, the
+ * efAsync_Dispatch / efAlt_Spawn delegates below, and queued efAsync flushes,
+ * which re-enter here) rolls HSD_Rand behind effect-pool allocs whose success
+ * depends on real-time render/free cadence -- state a rollback replay cannot
+ * reproduce, so the two peers roll different COUNTS and any sim-consequential
+ * roll later in the same tick forks the sims (target11c, tick 6876).
+ * Restoring the seed on every exit decouples effect roll counts from the sim
+ * RNG walk entirely; effect rotations/scales become per-peer visual
+ * randomness, which nothing sim-side reads. */
+#define NW_EF_RETURN(x)                                                       \
+    do {                                                                      \
+        void* nw_ret_ = (x);                                                  \
+        if (nw_seed_armed) {                                                  \
+            nw_SeedRestore(nw_saved_seed);                                    \
+        }                                                                     \
+        return nw_ret_;                                                       \
+    } while (0)
+#else
+#define NW_EF_RETURN(x) return (x)
+#endif
+
 /*
  * TODO: efSync_Spawn is at 98% matching, and its associated jump
  *       table is at 60%. I presume once efSync_Spawn matches so
@@ -62,9 +86,17 @@ void* efSync_Spawn(s32 gfx_id, HSD_GObj* gobj, ...)
     s32 cnt_1;
     Fighter* fp;
     s32 cnt_2;
+#ifdef NETPLAY
+    u32 nw_saved_seed;
+    int nw_seed_armed;
+#endif
     PAD_STACK(0x4C);
 
     ret_obj = NULL;
+#ifdef NETPLAY
+    nw_seed_armed = nw_IsActive();
+    nw_saved_seed = nw_seed_armed ? nw_SeedSave() : 0;
+#endif
     efLib_LoadKind = EF_LOADKIND_ASYNC;
     efLib_AnimCount = 0;
     va_start(vlist, gobj);
@@ -73,17 +105,17 @@ void* efSync_Spawn(s32 gfx_id, HSD_GObj* gobj, ...)
     }
     if (gfx_id < 0x250) {
         va_vec3 = va_arg(vlist, Vec3*);
-        return efLib_CreateGenerator(gfx_id, va_vec3);
+        NW_EF_RETURN(efLib_CreateGenerator(gfx_id, va_vec3));
     }
     if (gfx_id / 1000 == 0x1E) {
         va_vec3 = va_arg(vlist, Vec3*);
-        return efLib_CreateGenerator(gfx_id, va_vec3);
+        NW_EF_RETURN(efLib_CreateGenerator(gfx_id, va_vec3));
     }
     if (gfx_id < 0x478) {
-        return efAsync_Dispatch(gfx_id, gobj, vlist);
+        NW_EF_RETURN(efAsync_Dispatch(gfx_id, gobj, vlist));
     }
     if (gfx_id < 0x4BA) {
-        return efAlt_Spawn(gfx_id, gobj, vlist);
+        NW_EF_RETURN(efAlt_Spawn(gfx_id, gobj, vlist));
     }
     efLib_LoadKind = EF_LOADKIND_SYNC;
     switch (gfx_id) {
@@ -653,5 +685,5 @@ void* efSync_Spawn(s32 gfx_id, HSD_GObj* gobj, ...)
     }
 
     va_end(vlist);
-    return ret_obj;
+    NW_EF_RETURN(ret_obj);
 }

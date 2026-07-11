@@ -533,7 +533,17 @@ config.libs = [
         [
             Object(Matching, "melee/ef/efdata.c"),
             Object(Matching, "melee/ef/eflib.c"),
-            Object(NonMatching, "melee/ef/efsync.c"),
+            # efsync.c: NonMatching (retail object linked) in normal builds;
+            # netplay builds link it from source for the visual/sim RNG split
+            # (v13): efSync_Spawn saves/restores the RNG state word around
+            # ALL effect-spawn dispatch, so effect-pool-conditioned roll
+            # counts (allocs depend on real-time render/free cadence, which
+            # rollback replays cannot reproduce) can no longer shift
+            # sim-consequential rolls within a tick. efAsync_Dispatch and
+            # efAlt_Spawn are only reachable through efSync_Spawn, so the
+            # retail objects for those TUs stay linked.
+            Object(Matching if args.netplay else NonMatching,
+                   "melee/ef/efsync.c"),
             Object(Matching, "melee/ef/efalt.c"),
             Object(NonMatching, "melee/ef/efasync.c"),
         ],

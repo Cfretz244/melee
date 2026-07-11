@@ -90,6 +90,16 @@ u32 nw_GetSeed(void)
     return nw.seed;
 }
 
+u32 nw_SeedSave(void)
+{
+    return (u32) *seed_ptr;
+}
+
+void nw_SeedRestore(u32 saved)
+{
+    *seed_ptr = (s32) saved;
+}
+
 /// Run one device transaction: imm-write the command word, then optionally a
 /// DMA payload (@p dma_len must be a multiple of 32), then optionally a 4-byte
 /// imm read into @p imm_out. Returns false on any EXI-layer failure.
