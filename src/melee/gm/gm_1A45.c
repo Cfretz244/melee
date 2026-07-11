@@ -418,27 +418,16 @@ static void gm_SceneTickBody(void (*arg0)(void))
             if (DbLevel >= 3) {
                 db_CheckScreenshot();
             }
-#if defined(NETPLAY) && !defined(NETPLAY_NO_HOOKS)
-            /// Audio is GATED during replays (again). History: the original
-            /// gate assumed all sound state was live/excluded; v8 removed it
-            /// because the game-side audio pool was RESTORED then (a gated
-            /// replay skipped the original pass's voice frees and the
-            /// pool-conditioned HSD_Rand rolls forked the walks). The v15e
-            /// table then excluded the WHOLE audio stack (lbaudio_ax pool
-            /// included) -- inverting the argument: with all audio state
-            /// LIVE, a replayed frame update operates on state that already
-            /// advanced past this tick, DOUBLE-evolving it (duplicate SFX
-            /// and music-stream posts, premature stream pumps, DevCom pool
-            /// pressure: the HSD_Synth PStream spin and AX voice-list
-            /// livelocks at 1000-rollback churn). Roll-count divergence from
-            /// skipping pool-conditioned rolls is healed by the per-tick
-            /// reseed (nw_ReseedTick, v13). Offline build unchanged.
-            if (!nw_IsReplaying()) {
-                lbAudioAx_80027DF8();
-            }
-#else
+            /// Audio runs during replays (v19 tried re-gating it after the
+            /// v15e table made all audio state live -- the double-evolution
+            /// theory -- and BOTH qualification runs then hung at the next
+            /// scene exit with loads delivered and no rollback anywhere
+            /// near: the gate breaks something in the exit path that two
+            /// ungated builds passed cleanly. Mechanism unproven either
+            /// way; the A/B is decisive. The churn-induced audio wedge
+            /// family (HSD_Synth PStream spin at ~1000 rollbacks/match)
+            /// remains open -- instrument it before theorizing again.)
             lbAudioAx_80027DF8();
-#endif
             if (temp_r25->unk_10.unk_30 != NULL) {
                 temp_r25->unk_10.unk_30();
             }
