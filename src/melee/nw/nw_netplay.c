@@ -27,7 +27,9 @@
 #define NW_CMD_CHECKSUM 0x05
 
 #define NW_MAGIC 0x4D4E4554 /* 'MNET' */
-#define NW_PROTO_VERSION 3
+/// v4: the handshake blob carries the session port census (combined_mask,
+/// barrier_mask, players), so 4-player sessions stop being unrepresentable.
+#define NW_PROTO_VERSION 4
 #define NW_CHECKSUM_INTERVAL 60
 
 /// v3 POLL status word: status<<24 | arg (must match the device enum).
@@ -49,15 +51,20 @@ static struct {
     bool replaying;
     u8 local_mask;
     u8 combined_mask;
+    /// One bit per PEER: that peer's first-owned port, i.e. the block it
+    /// stamps its barrier flag into. Equals combined_mask when every peer
+    /// owns exactly one pad (the 1v1 and 4-player-singles cases).
+    u8 barrier_mask;
     u8 delay;
     u32 seed;
     u32 tick;
     nw_TickRunner runner;
-    /// Scene barrier (nw_SceneBarrier): our outgoing ready flag, and both
-    /// peers' flags as served for the current tick (see NW_PAD_FLAG_OFF).
+    /// Scene barrier (nw_SceneBarrier): our outgoing ready flag, and EVERY
+    /// port's flag as served for the current tick (see NW_PAD_FLAG_OFF).
+    /// Indexed by netplay port, not by peer -- only the ports in barrier_mask
+    /// carry a real stamp.
     u8 scene_ready_out;
-    u8 scene_flag_p0;
-    u8 scene_flag_p1;
+    u8 scene_flag[4];
     /// Scene routing (see NW_PAD_ROUTE_OFF): our outgoing pending-scene
     /// byte, and the HOST's as served for the current tick.
     u8 scene_route_out;
@@ -235,7 +242,8 @@ void nw_Init(void)
 
     /// Handshake blob (device blocks until the session resolves):
     /// { u32 magic; u8 active; u8 local_port_mask; u8 delay; u8 proto_ver;
-    ///   u32 rng_seed; u32 flags; }
+    ///   u32 rng_seed; u32 flags; u32 pad;
+    ///   u8 combined_mask; u8 barrier_mask; u8 players; }
     memset(nw_dma_buf, 0, sizeof(nw_dma_buf));
     if (!nw_Transact(NW_CMD_HANDSHAKE, nw_dma_buf, 32, NW_EXI_READ, NULL)) {
         return;
@@ -259,8 +267,11 @@ void nw_Init(void)
         nw.seed = *(u32*) &nw_dma_buf[8];
         /// The device guarantees frames for every participating port; ports
         /// outside this mask are forced to "no controller" after each RECV.
-        /// MVP is 1v1: the peers' masks are disjoint and cover both players.
-        nw.combined_mask = 0x3;
+        /// The device deals the census at the handshake (protocol v4): this
+        /// used to be hardcoded 0x3 for the 1v1 MVP, which pinned ports 2/3
+        /// to "unplugged" forever and made 4-player impossible.
+        nw.combined_mask = nw_dma_buf[16];
+        nw.barrier_mask = nw_dma_buf[17];
         nw.tick = 0;
         nw.active = true;
 
@@ -269,8 +280,9 @@ void nw_Init(void)
         OSSetPeriodicAlarm(&nw_salvage_alarm, OSGetTime(),
                            OSMillisecondsToTicks(16), nw_SalvageAlarmHandler);
 
-        OSReport("nw: session up (ports %02x, delay %d)\n", nw.local_mask,
-                 nw.delay);
+        OSReport("nw: session up (ports %02x, combined %02x, barrier %02x, "
+                 "delay %d)\n",
+                 nw.local_mask, nw.combined_mask, nw.barrier_mask, nw.delay);
     }
 }
 
@@ -334,6 +346,7 @@ bool nw_IsReplaying(void)
 bool nw_SceneBarrier(bool local_done, u8* routing)
 {
     bool both;
+    int i;
 
     if (!nw.active) {
         return local_done;
@@ -347,9 +360,20 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
     }
     nw.scene_ready_out = local_done ? 1 : 0;
     nw.scene_route_out = *routing;
-    /// Bit 0 only: bit 7 of the flag byte carries the match-end quiesce
-    /// stamp (see nw_ExchangeMaster), which must never release the barrier.
-    both = (nw.scene_flag_p0 & 1) != 0 && (nw.scene_flag_p1 & 1) != 0;
+    /// Release needs EVERY peer ready, not just two. Each peer stamps its
+    /// flag into its first-owned port's block, so barrier_mask names exactly
+    /// the blocks that carry one. Bit 0 only: bit 7 of the flag byte carries
+    /// the match-end quiesce stamp (see nw_ExchangeMaster), which must never
+    /// release the barrier.
+    both = true;
+    for (i = 0; i < 4; i++) {
+        if (!(nw.barrier_mask & (1 << i))) {
+            continue;
+        }
+        if (!(nw.scene_flag[i] & 1)) {
+            both = false;
+        }
+    }
     if (both) {
         /// Release: both flags landed on the same tick on both peers. The
         /// wait window ran divergent code (one peer held a finished scene
@@ -387,12 +411,14 @@ static bool nw_RecvInject(void)
     }
     memcpy(HSD_PadMasterStatus, nw_dma_buf, 4 * NW_PAD_BYTES);
 
-    /// Scene-barrier flags for the served tick (host stamps port 0's block,
-    /// client port 1's; see nw_SceneBarrier). Replay re-injection overwrites
-    /// these with historical values, but the post-replay inject of the
-    /// current tick runs last and restores them before anyone looks.
-    nw.scene_flag_p0 = nw_dma_buf[0 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
-    nw.scene_flag_p1 = nw_dma_buf[1 * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
+    /// Scene-barrier flags for the served tick: every peer stamps its own
+    /// first-owned port's block (see nw_SceneBarrier), so read all four and
+    /// let barrier_mask decide which ones count. Replay re-injection
+    /// overwrites these with historical values, but the post-replay inject of
+    /// the current tick runs last and restores them before anyone looks.
+    for (i = 0; i < 4; i++) {
+        nw.scene_flag[i] = nw_dma_buf[i * NW_PAD_BYTES + NW_PAD_FLAG_OFF];
+    }
     /// Routing byte from the HOST's block (port 0) -- the destination both
     /// peers adopt at barrier release.
     nw.scene_route_host = nw_dma_buf[0 * NW_PAD_BYTES + NW_PAD_ROUTE_OFF];
@@ -443,14 +469,23 @@ void nw_ExchangeMaster(void)
     *(u32*) &nw_dma_buf[0] = nw.tick + nw.delay;
     memcpy(&nw_dma_buf[4], HSD_PadMasterStatus, 4 * NW_PAD_BYTES);
     {
-        /// Stamp the scene-barrier flag and routing byte into our own first
-        /// owned port's block; the device forwards only owned ports, so each
-        /// peer's bytes arrive in its conventional slot (host: port 0,
-        /// client: port 1).
-        u32 p = 0;
-        while (p < 3 && !(nw.local_mask & (1 << p))) {
-            p++;
-        }
+        /// Stamp the scene-barrier flag and routing byte into PHYSICAL block
+        /// 0 -- the block the device actually transmits.
+        ///
+        /// The device maps our local physical pads onto the netplay ports we
+        /// own in ascending order (physical 0 -> lowest owned port), so block
+        /// 0 is what lands in our port's slot on every peer. Stamping the
+        /// block at our NETPLAY port index instead (what this used to do) is
+        /// only the same block for a peer owning port 0: the client stamped
+        /// block 1 while block 0 went out as its port-1 payload. Bytes
+        /// 0x42/0x43 are HSD_PadStatus alignment padding the pad transform
+        /// never writes, so block 0 still carried the previous RECV's memcpy
+        /// -- the HOST's served flag -- and the client transmitted the host's
+        /// own readiness back at it while its own never reached the wire.
+        /// In 1v1 that quietly degraded the barrier to "the host decides"
+        /// (deterministic on both peers, so it never desynced); with 4
+        /// players, 3 of 4 peers own a non-zero port and it is fatal.
+        ///
         /// Bit 7: match-end quiesce stamp. From GAME! (match info unk_0
         /// nonzero: frozen final frame through the finished state) to the
         /// scene exit, the game issues results-screen loads (HSD synth
@@ -464,9 +499,9 @@ void nw_ExchangeMaster(void)
         /// (residual exposure there, accepted). Layering: read via the
         /// documented first byte of the live match global rather than
         /// pulling in the whole gm type graph.
-        nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
+        nw_dma_buf[4 + 0 * NW_PAD_BYTES + NW_PAD_FLAG_OFF] =
             nw.scene_ready_out | (nw_MatchEnding() ? 0x80 : 0);
-        nw_dma_buf[4 + p * NW_PAD_BYTES + NW_PAD_ROUTE_OFF] =
+        nw_dma_buf[4 + 0 * NW_PAD_BYTES + NW_PAD_ROUTE_OFF] =
             nw.scene_route_out;
     }
     if (!nw_Transact(NW_CMD_SEND, nw_dma_buf, NW_XFER_BYTES, NW_EXI_WRITE,
