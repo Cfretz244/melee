@@ -351,6 +351,12 @@ bool nw_SceneBarrier(bool local_done, u8* routing)
     if (!nw.active) {
         return local_done;
     }
+#ifdef NW_BARRIER_BYPASS
+    /// DIAGNOSTIC BUILD ONLY (never ship): honor scene exits unilaterally.
+    /// Used to answer whether the barrier is what prevents escaping Melee's
+    /// attract DEMO loop into the main menu. Desyncs scene flow by design.
+    return local_done;
+#endif
     /// Drain fence: served flag bytes within delay ticks of the previous
     /// release are stale pre-release stamps (see barrier_drain_until).
     if (nw.tick < nw.barrier_drain_until) {

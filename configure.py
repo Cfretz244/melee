@@ -275,6 +275,9 @@ if args.netplay:
     import os as _os
     if _os.environ.get("NETPLAY_NO_HOOKS"):
         cflags_base.append("-DNETPLAY_NO_HOOKS")
+    # Diagnostic-only: honor scene exits unilaterally (no barrier). Never ship.
+    if _os.environ.get("NW_BARRIER_BYPASS"):
+        cflags_base.append("-DNW_BARRIER_BYPASS")
 
 cflags_base.append(f"-maxerrors {args.max_errors}")
 if args.max_errors == 0:
