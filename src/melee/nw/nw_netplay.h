@@ -95,4 +95,21 @@ bool nw_IsReplaying(void);
 /// curr_scene, and the attract Decide callbacks never write routing.
 bool nw_SceneBarrier(bool local_done, u8* routing);
 
+/// Host-side jukebox (protocol v5): under netplay the game does not stream
+/// HPS music itself (the v22 cut -- DVD music state cannot survive rollback);
+/// it NOTIFIES the device instead, and Dolphin plays the track entirely
+/// outside the sim. Play/stop latch the desired state here and are flushed to
+/// the device from the next exchange (<= 1 tick later) -- keeping every EXI
+/// transaction in the guaranteed-safe exchange context regardless of which
+/// scene code asked for music. Volume is polled per tick from the exchange
+/// (cache-compared, sent on change). All no-ops when inactive.
+void nw_JukeboxPlay(const char* path, u8 vol, u8 track);
+void nw_JukeboxStop(void);
+
+/// The game's final music volume 0..254 (lbl_804D3888: folds the sound-menu
+/// setting, pause ducking and the Starman multiplier). The global is
+/// file-local to lbaudio_ax.c, so that TU exports this accessor for the
+/// per-tick volume poll.
+u8 nw_JukeboxQueryVolume(void);
+
 #endif

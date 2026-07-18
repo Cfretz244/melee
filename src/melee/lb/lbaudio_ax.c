@@ -250,6 +250,14 @@ int lbAudioAx_800236B8(int arg0)
 
 int lbAudioAx_800236DC(void)
 {
+#ifdef NETPLAY
+    /// v24 jukebox: the centralized music stop (every stop caller in vi/,
+    /// mn/, gr/ lands here). AXDriverStop() is a music no-op under the
+    /// netplay gate, so the device is told instead.
+    if (nw_IsActive()) {
+        nw_JukeboxStop();
+    }
+#endif
     AXDriverStop();
     lbl_804D6418 = 0;
     lbl_803BB300[0] = '\0';
@@ -449,7 +457,12 @@ bool fn_80023ED4(const char* arg0, int arg1, int arg2)
     /// with music disabled for years for exactly this reason. SFX,
     /// announcer, and crowd are ARAM-based and unaffected. Pretend success
     /// so callers' bookkeeping stays consistent.
+    ///
+    /// v24: the device plays the track HOST-SIDE instead (jukebox) -- notify
+    /// it, keep the gate. Fire-and-forget: caller bookkeeping stays exactly
+    /// as in v22.
     if (nw_IsActive()) {
+        nw_JukeboxPlay(arg0, (u8) var_r0, (u8) arg2);
         return true;
     }
 #endif
@@ -900,6 +913,16 @@ void fn_80024654(int arg0)
         lbl_804D38DC = lbl_804D38E0;
     }
 }
+
+#ifdef NETPLAY
+/// v24 jukebox: the final music volume for the per-tick device poll
+/// (nw_JukeboxFlush). The global is file-local, hence this accessor; see
+/// nw_netplay.h.
+u8 nw_JukeboxQueryVolume(void)
+{
+    return (u8) lbl_804D3888;
+}
+#endif
 
 void lbAudioAx_80024B1C(int arg0, int arg1)
 {

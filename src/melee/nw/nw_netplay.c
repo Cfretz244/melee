@@ -25,11 +25,19 @@
 #define NW_CMD_POLL 0x03
 #define NW_CMD_RECV 0x04
 #define NW_CMD_CHECKSUM 0x05
+/// Jukebox (v5): fire-and-forget music notifications. PLAY carries a 64-byte
+/// DMA payload {char path[0x3C]; u8 vol; u8 track; u8 pad[2]}; STOP is
+/// imm-only; VOL is imm-only with the volume in the command word's low byte.
+#define NW_CMD_JUKEBOX_PLAY 0x06
+#define NW_CMD_JUKEBOX_STOP 0x07
+#define NW_CMD_JUKEBOX_VOL 0x08
 
 #define NW_MAGIC 0x4D4E4554 /* 'MNET' */
 /// v4: the handshake blob carries the session port census (combined_mask,
 /// barrier_mask, players), so 4-player sessions stop being unrepresentable.
-#define NW_PROTO_VERSION 4
+/// v5: jukebox commands (host-side BGM) -- a stale peer fails the handshake
+/// LOUDLY instead of silently playing a musicless build against a musical one.
+#define NW_PROTO_VERSION 5
 #define NW_CHECKSUM_INTERVAL 60
 
 /// v3 POLL status word: status<<24 | arg (must match the device enum).
@@ -177,6 +185,18 @@ static int nw_MatchEnding(void)
 /// GC EXI DMA requires 32-byte alignment and 32-byte-multiple lengths.
 static u8 nw_dma_buf[NW_XFER_BYTES] ATTRIBUTE_ALIGN(32);
 
+/// Jukebox desired state (see nw_JukeboxPlay/nw_JukeboxStop): scene code
+/// latches here; nw_JukeboxFlush() sends from the exchange context. The PLAY
+/// payload gets its own aligned buffer -- it must not share nw_dma_buf, whose
+/// contents the exchange sequence is building when the flush runs.
+static u8 nw_jukebox_buf[64] ATTRIBUTE_ALIGN(32);
+static char nw_jukebox_path[0x3C];
+static u8 nw_jukebox_vol;
+static u8 nw_jukebox_track;
+static bool nw_jukebox_playing;
+static bool nw_jukebox_dirty;
+static int nw_jukebox_vol_sent = -1;
+
 bool nw_IsActive(void)
 {
     return nw.active;
@@ -197,13 +217,14 @@ void nw_SeedRestore(u32 saved)
     *seed_ptr = (s32) saved;
 }
 
-/// Run one device transaction: imm-write the command word, then optionally a
-/// DMA payload (@p dma_len must be a multiple of 32), then optionally a 4-byte
-/// imm read into @p imm_out. Returns false on any EXI-layer failure.
-static bool nw_Transact(u8 cmd, void* dma_buf, s32 dma_len, u32 dma_dir,
-                        u32* imm_out)
+/// Run one device transaction: imm-write the command word (high byte = the
+/// command; low bytes free for imm payload, e.g. the jukebox volume), then
+/// optionally a DMA payload (@p dma_len must be a multiple of 32), then
+/// optionally a 4-byte imm read into @p imm_out. Returns false on any
+/// EXI-layer failure.
+static bool nw_TransactWord(u32 cmd_word, void* dma_buf, s32 dma_len,
+                            u32 dma_dir, u32* imm_out)
 {
-    u32 cmd_word = (u32) cmd << 24;
     bool ok;
 
     if (!EXILock(NW_CHAN, NW_DEV, NULL)) {
@@ -228,6 +249,78 @@ static bool nw_Transact(u8 cmd, void* dma_buf, s32 dma_len, u32 dma_dir,
     EXIDeselect(NW_CHAN);
     EXIUnlock(NW_CHAN);
     return ok;
+}
+
+static bool nw_Transact(u8 cmd, void* dma_buf, s32 dma_len, u32 dma_dir,
+                        u32* imm_out)
+{
+    return nw_TransactWord((u32) cmd << 24, dma_buf, dma_len, dma_dir,
+                           imm_out);
+}
+
+void nw_JukeboxPlay(const char* path, u8 vol, u8 track)
+{
+    int i;
+
+    if (!nw.active || path == NULL) {
+        return;
+    }
+    for (i = 0; i < (int) sizeof(nw_jukebox_path) - 1 && path[i] != '\0'; i++)
+    {
+        nw_jukebox_path[i] = path[i];
+    }
+    nw_jukebox_path[i] = '\0';
+    nw_jukebox_vol = vol;
+    nw_jukebox_track = track;
+    nw_jukebox_playing = true;
+    nw_jukebox_dirty = true;
+}
+
+void nw_JukeboxStop(void)
+{
+    if (!nw.active) {
+        return;
+    }
+    nw_jukebox_playing = false;
+    nw_jukebox_dirty = true;
+}
+
+/// Flush the latched jukebox state, called once per tick from the exchange
+/// (the guaranteed-safe EXI context). Play-then-stop within one tick
+/// collapses to the final state, which is what the device would have ended
+/// at anyway. A failed transaction (e.g. CARD briefly holding the channel
+/// lock) stays dirty and retries next tick; the volume cache only advances
+/// on success for the same reason.
+static void nw_JukeboxFlush(void)
+{
+    int vol;
+
+    if (nw_jukebox_dirty) {
+        bool ok;
+        if (nw_jukebox_playing) {
+            memset(nw_jukebox_buf, 0, sizeof(nw_jukebox_buf));
+            memcpy(nw_jukebox_buf, nw_jukebox_path, sizeof(nw_jukebox_path));
+            nw_jukebox_buf[0x3C] = nw_jukebox_vol;
+            nw_jukebox_buf[0x3D] = nw_jukebox_track;
+            ok = nw_Transact(NW_CMD_JUKEBOX_PLAY, nw_jukebox_buf,
+                             sizeof(nw_jukebox_buf), NW_EXI_WRITE, NULL);
+        } else {
+            ok = nw_Transact(NW_CMD_JUKEBOX_STOP, NULL, 0, NW_EXI_WRITE,
+                             NULL);
+        }
+        if (ok) {
+            nw_jukebox_dirty = false;
+        }
+    }
+
+    vol = nw_JukeboxQueryVolume();
+    if (vol != nw_jukebox_vol_sent) {
+        if (nw_TransactWord(((u32) NW_CMD_JUKEBOX_VOL << 24) | (u32) vol,
+                            NULL, 0, NW_EXI_WRITE, NULL))
+        {
+            nw_jukebox_vol_sent = vol;
+        }
+    }
 }
 
 void nw_Init(void)
@@ -468,6 +561,10 @@ void nw_ExchangeMaster(void)
     if (!nw.active) {
         return;
     }
+
+    /// Jukebox notifications ride the same per-tick cadence (menus are
+    /// covered too: the exchange runs from boot).
+    nw_JukeboxFlush();
 
     /// Schedule the local post-transform snapshot for tick + delay and ship
     /// it to the peer (the device loops our own ports back at that tick).
